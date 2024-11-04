@@ -1,18 +1,24 @@
 [package]
-name = "focus"
+name = "keep-it-focused"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0.91"
+chrono = "0.4.38"
 clap = { version = "4.5.18", features = ["derive"] }
 dbus = { version = "0.9.7", features = ["futures"] }
 dbus-tokio = "0.7.6"
+kill_tree = "0.2.4"
 lazy-regex = "3.3.0"
 libc = "0.2.161"
 log = "0.4.22"
+procfs = "0.17.0"
 regex = "1.11.1"
 serde = { version = "1.0.214", features = ["serde_derive"] }
 serde_yaml = "0.9.34"
-tokio = { version = "1.41.0", features = ["full"] }
+simple_logger = "5.0.0"
+systemd-journal-logger = "2.2.0"
 utmpx = "0.2.0"
+uucore = { version = "0.0.27", features = ["entries"] }
+validator = { version = "0.19.0", features = ["derive"] }
