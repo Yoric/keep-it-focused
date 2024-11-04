@@ -1,0 +1,10 @@
+[Unit]
+Description=Prevent some distracting applications from launching outside allowed times.
+
+[Service]
+User=root
+WorkingDirectory=/root
+ExecStart=/usr/bin/keep-it-focused
+Restart=always
+RestartSec=3
+
