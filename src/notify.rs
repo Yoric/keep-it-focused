@@ -18,11 +18,7 @@ impl std::fmt::Display for Urgency {
     }
 }
 
-pub fn notify(
-    user: &str,
-    message: &str,
-    urgency: Urgency,
-) -> Result<(), anyhow::Error> {
+pub fn notify(user: &str, message: &str, urgency: Urgency) -> Result<(), anyhow::Error> {
     info!("attempting to notify {user} of message {message}");
     let _ = std::process::Command::new("systemd-run")
         .arg("--user")
