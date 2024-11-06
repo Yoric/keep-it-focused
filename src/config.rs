@@ -1,6 +1,7 @@
 use std::{collections::HashSet, fmt::Display, path::PathBuf, time::Duration};
 
 use chrono::Timelike;
+use globset::{Glob, GlobMatcher};
 use lazy_regex::lazy_regex;
 use serde::{
     de::{Unexpected, Visitor},
@@ -8,17 +9,64 @@ use serde::{
 };
 use validator::{Validate, ValidationError};
 
-#[derive(PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Binary(pub PathBuf);
+/// The absolute path to a binary (may be a glob).
+#[derive(Debug)]
+pub struct Binary {
+    pub path: PathBuf,
+    pub matcher: GlobMatcher,
+}
+impl PartialEq for Binary {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+    }
+}
+impl Eq for Binary {}
 
-impl Display for Binary {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
+impl<'de> Deserialize<'de> for Binary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StrVisitor;
+        impl<'d> Visitor<'d> for StrVisitor {
+            type Value = Binary;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(formatter, "expected a glob string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let path = PathBuf::from(v);
+                let glob = Glob::new(v).map_err(|err| {
+                    E::invalid_value(Unexpected::Other(&format!("{}", err)), &"glob string")
+                })?;
+                let matcher = glob.compile_matcher();
+                Ok(Binary { path, matcher })
+            }
+        }
+        deserializer.deserialize_str(StrVisitor)
+    }
+}
+impl Serialize for Binary {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.path.to_string_lossy().as_ref())
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Serialize, Clone, Copy)]
+impl Display for Binary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.path)
+    }
+}
+
+/// A time of day.
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub struct TimeOfDay {
     pub hours: u8,
     pub minutes: u8,
@@ -43,7 +91,9 @@ impl PartialOrd for TimeOfDay {
 }
 impl Ord for TimeOfDay {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.hours.cmp(&other.hours).then_with(||self.minutes.cmp(&other.minutes))
+        self.hours
+            .cmp(&other.hours)
+            .then_with(|| self.minutes.cmp(&other.minutes))
     }
 }
 
@@ -91,13 +141,13 @@ impl<'de> Deserialize<'de> for TimeOfDay {
                 };
                 // Validate.
                 match (h, m) {
-                    (24, 00) => {},
+                    (24, 00) => {}
                     _ if h > 23 => {
                         return Err(E::invalid_value(
                             Unexpected::Str(hh),
                             &"a number between 00 and 23",
-                        ));    
-                    },
+                        ));
+                    }
                     _ if m > 59 => {
                         return Err(E::invalid_value(
                             Unexpected::Str(mm),
@@ -117,25 +167,52 @@ impl<'de> Deserialize<'de> for TimeOfDay {
     }
 }
 
+impl Serialize for TimeOfDay {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&format!("{:02}{:02}", self.hours, self.minutes))
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct Interval {
+    #[serde(default = "Interval::default_start")]
     pub start: TimeOfDay,
+
+    #[serde(default = "Interval::default_end")]
     pub end: TimeOfDay,
 }
 impl Interval {
     pub fn remaining(&self, time: TimeOfDay) -> Option<std::time::Duration> {
         if self.start > time || self.end < time {
-            return None
+            return None;
         }
         let end: Duration = self.end.into();
         let time: Duration = time.into();
         Some(end - time)
     }
+    fn default_start() -> TimeOfDay {
+        TimeOfDay {
+            hours: 0,
+            minutes: 0,
+        }
+    }
+    fn default_end() -> TimeOfDay {
+        TimeOfDay {
+            hours: 24,
+            minutes: 0,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Validate)]
 pub struct Watch {
+    /// The username.
     pub user: String,
+
+    /// The full path to the binary being watched.
     pub binary: Binary,
 
     // FIXME: Validate that there are no intersections between intervals.
@@ -152,7 +229,7 @@ impl Config {
     fn validate_distinct_binaries(watch: &[Watch]) -> Result<(), ValidationError> {
         let mut set = HashSet::new();
         for watch in watch {
-            if !set.insert(&watch.binary) {
+            if !set.insert(&watch.binary.path) {
                 let mut error = ValidationError::new("duplicate binary");
                 error.add_param("binary".into(), &watch.binary);
                 return Err(error);
@@ -187,8 +264,8 @@ mod test {
         "#;
         let config: Config = serde_yaml::from_str(sample).expect("invalid config");
         assert_eq!(config.watch.len(), 2);
-        assert_eq!(config.watch[0].binary.0.to_string_lossy(), "/bin/test");
-        assert_eq!(config.watch[1].binary.0.to_string_lossy(), "/bin/test2");
+        assert_eq!(config.watch[0].binary.to_string(), "/bin/test");
+        assert_eq!(config.watch[1].binary.to_string(), "/bin/test2");
         assert_eq!(
             config.watch[1].permitted[1].start,
             TimeOfDay {
@@ -197,7 +274,6 @@ mod test {
             }
         );
     }
-
 
     #[test]
     fn test_config_bad_interval() {
@@ -216,5 +292,4 @@ mod test {
         "#;
         assert!(serde_yaml::from_str::<Config>(sample).is_err());
     }
-
 }
