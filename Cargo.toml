@@ -1,6 +1,6 @@
 [package]
 name = "keep-it-focused"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 
 [dependencies]
@@ -16,6 +16,7 @@ log = "0.4.22"
 procfs = "0.17.0"
 regex = "1.11.1"
 serde = { version = "1.0.214", features = ["serde_derive"] }
+serde-untagged = "0.1.6"
 serde_yaml = "0.9.34"
 simple_logger = "5.0.0"
 systemd-journal-logger = "2.2.0"

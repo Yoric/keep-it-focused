@@ -1,14 +1,13 @@
-use std::{collections::HashMap, path::Path, thread};
+use std::{collections::HashMap, path::{Path, PathBuf}, rc::Rc, thread};
 
 use anyhow::Context;
 use clap::Parser;
-use config::{Binary, TimeOfDay};
-use log::info;
+use config::{Binary, DayOfWeek, TimeOfDay};
+use log::{debug, info, set_max_level, warn, LevelFilter};
 use notify::notify;
 use procfs::ProcError;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 use uid_resolver::Uid;
-
 mod config;
 mod notify;
 mod uid_resolver;
@@ -20,44 +19,52 @@ pub struct Args {
     /// How often to check for offending processes.
     #[arg(short, long, default_value = "60")]
     sleep_s: u64,
+
+    #[arg(short, long, default_value = CONFIG_PATH)]
+    config: PathBuf,
 }
 
 pub fn main() -> Result<(), anyhow::Error> {
     if connected_to_journal() {
+        eprintln!("using journal log");
         JournalLog::new().unwrap().install().unwrap();
+        set_max_level(LevelFilter::Debug);
     } else {
+        eprintln!("using simple logger");
         simple_logger::SimpleLogger::new().env().init().unwrap();
     }
+    info!("starting");
+
     let args = Args::parse();
 
-    let mut last_modified = std::fs::metadata(CONFIG_PATH)
+    let mut last_modified = std::fs::metadata(&args.config)
         .context("could not find configuration")?
         .modified()
         .context("no latest modification time")?;
-    let mut config = init(&CONFIG_PATH).context("could not read configuration")?;
+    let mut config = init(&args.config).context("could not read configuration")?;
 
     loop {
         info!("sleeping");
         thread::sleep(std::time::Duration::from_secs(args.sleep_s));
-        let modified = std::fs::metadata(CONFIG_PATH)
+        let modified = std::fs::metadata(&args.config)
             .context("could not find configuration")?
             .modified()
             .context("no latest modification time")?;
         if modified > last_modified {
             info!("reloading config");
             last_modified = modified;
-            config = init(&CONFIG_PATH).context("could not read configuration")?;
+            config = init(&args.config).context("could not read configuration")?;
         }
         find_offending_processes(&config).context("error while examining offending processes")?;
     }
 }
 
 pub struct UserInstructions {
-    user_name: String,
+    user_name: Rc<String>,
     instructions: Vec<(Binary, Box<[config::Interval]>)>,
 }
 impl UserInstructions {
-    pub fn new(user_name: String) -> Self {
+    pub fn new(user_name: Rc<String>) -> Self {
         UserInstructions {
             user_name,
             instructions: Vec::new(),
@@ -65,29 +72,44 @@ impl UserInstructions {
     }
 }
 type PerUid = HashMap<Uid, UserInstructions>;
+type PerDay = HashMap<DayOfWeek, PerUid>;
 
-pub fn init<P: AsRef<Path>>(path: &P) -> Result<PerUid, anyhow::Error> {
+pub fn init<P: AsRef<Path>>(path: &P) -> Result<PerDay, anyhow::Error> {
+    info!("reading config... start");
     let reader = std::fs::File::open(path)
         .with_context(|| format!("could not open file {}", path.as_ref().to_string_lossy()))?;
     let config: config::Config = serde_yaml::from_reader(reader)
         .with_context(|| format!("could not parse file {}", path.as_ref().to_string_lossy()))?;
 
     let mut resolver = uid_resolver::Resolver::new();
-    let mut per_uid = HashMap::new();
-    for watch in config.watch {
-        let uid = resolver.resolve(&watch.user)?;
-        let per_binary = per_uid
-            .entry(uid)
-            .or_insert_with(|| UserInstructions::new(watch.user));
-        per_binary
-            .instructions
-            .push((watch.binary, watch.permitted.into_boxed_slice()));
+    let mut per_day: PerDay = HashMap::new();
+    for (user, week) in config.users {
+        let user = Rc::new(user);
+        let uid = resolver.resolve(&user)?;
+        for (day, day_config) in week.0 {
+            let this_day = per_day.entry(day).or_default();
+            let this_user = this_day
+                .entry(uid)
+                .or_insert_with(|| UserInstructions::new(user.clone()));
+            for proc in day_config.processes {
+                this_user
+                    .instructions
+                    .push((proc.binary, proc.permitted.into_boxed_slice()))
+            }
+        }
     }
-    Ok(per_uid)
+    info!("reading config... complete");
+    Ok(per_day)
 }
 
-pub fn find_offending_processes(config: &PerUid) -> Result<(), anyhow::Error> {
-    if config.is_empty() {
+pub fn find_offending_processes(config: &PerDay) -> Result<(), anyhow::Error> {
+    let today = DayOfWeek::now();
+    let Some(today_config) = config.get(&today) else {
+        // Nothing to do for today.
+        return Ok(());
+    };
+    if today_config.is_empty() {
+        // Nothing to do for today.
         return Ok(());
     }
 
@@ -100,65 +122,74 @@ pub fn find_offending_processes(config: &PerUid) -> Result<(), anyhow::Error> {
         let proc = match proc {
             Ok(p) => p,
             Err(err) => {
-                log::warn!(target: "procfs", "could not access proc: {}", err);
+                warn!(target: "procfs", "could not access proc, skipping: {}", err);
                 continue;
             }
         };
         let uid = match proc.uid() {
             Ok(uid) => Uid(uid),
             Err(err) => {
-                log::warn!(target: "procfs", "could not access proc uid for process {pid}: {}", err, pid=proc.pid);
+                warn!(target: "procfs", "could not access proc uid for process {pid}, skipping: {}", err, pid=proc.pid);
                 continue;
             }
         };
-        let Some(per_binary) = config.get(&uid) else {
+        let Some(user_config) = today_config.get(&uid) else {
             // Nothing to watch for this user.
             continue;
         };
         let exe = match proc.exe() {
             Ok(exe) => exe,
             Err(err @ ProcError::PermissionDenied(_)) => {
-                log::debug!(target: "procfs", "could not access proc exe for process {pid}: {}", err, pid=proc.pid);
+                debug!(target: "procfs", "could not access proc exe for process {pid}, skipping: {}", err, pid=proc.pid);
                 continue;
             }
             Err(err) => {
-                log::warn!(target: "procfs", "could not access proc exe for process {pid}: {}", err, pid=proc.pid);
+                warn!(target: "procfs", "could not access proc exe for process {pid}, skipping: {}", err, pid=proc.pid);
                 continue;
             }
         };
 
-        for (binary, intervals) in &per_binary.instructions {
+        debug!("examining process {:?}", exe);
+        for (binary, intervals) in &user_config.instructions {
             if !binary.matcher.is_match(&exe) {
+                debug!("we're not interested in this process");
                 continue;
             }
-            log::info!("found binary {} for user {}", exe.to_string_lossy(), per_binary.user_name);
+            info!(
+                "found binary {} for user {}",
+                exe.to_string_lossy(),
+                user_config.user_name
+            );
             if let Some(duration) = intervals
                 .iter()
                 .filter_map(|interval| interval.remaining(now))
                 .next()
             {
                 // We're still in permitted territory.
-                log::info!("binary is still allowed at this time");
+                info!("binary is still allowed at this time");
                 if duration < std::time::Duration::from_secs(300) {
                     // ...however, we're less than 5 minutes away from shutdown, so let's warn user!
                     let minutes = duration.as_secs() / 60;
                     if let Err(err) = notify(
-                        &per_binary.user_name,
+                        &user_config.user_name,
                         &format!("{} will quit in {} minutes", exe.to_string_lossy(), minutes),
                         notify::Urgency::Significant,
                     ) {
-                        log::warn!(target: "notify", "failed to notify user {}: {:?}", per_binary.user_name, err)
+                        warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                     }
                 }
             } else {
-                log::info!("let's kill this binary");
+                info!("let's kill this binary");
                 // Time to kill the binary.
                 if let Err(err) = notify(
-                    &per_binary.user_name,
-                    &format!("{} is not permitted at this time, stopping it", exe.to_string_lossy()),
+                    &user_config.user_name,
+                    &format!(
+                        "{} is not permitted at this time, stopping it",
+                        exe.to_string_lossy()
+                    ),
                     notify::Urgency::Significant,
                 ) {
-                    log::warn!(target: "notify", "failed to notify user {}: {:?}", per_binary.user_name, err)
+                    warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                 }
                 if let Err(err) = kill_tree::blocking::kill_tree_with_config(
                     proc.pid as u32,
@@ -167,9 +198,9 @@ pub fn find_offending_processes(config: &PerUid) -> Result<(), anyhow::Error> {
                         ..Default::default()
                     },
                 ) {
-                    log::warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
+                    warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
                 }
-                log::info!("binary killed");
+                info!("binary killed");
             }
         }
     }
