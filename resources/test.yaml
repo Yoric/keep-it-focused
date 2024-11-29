@@ -1,0 +1,26 @@
+users:
+  florentin:
+    monday:
+      processes:
+        - binary: "**/luanti"
+          permitted:
+          - start: 1700
+            end:   "1800"
+        - binary: "/usr/games/**"
+          permitted:
+          - start: 1700
+            end:   1800
+    tuesday:
+      like: monday
+    wednesday:
+      like: monday
+    thursday:
+      like: monday
+    friday:
+      like: monday
+    saturday:
+      processes:
+      - binary: "**/luanti"
+        permitted: []
+      - binary: "/usr/games/**"
+        permitted: []
