@@ -1,5 +1,5 @@
 users:
-  florentin:
+  david:
     monday:
       processes:
         - binary: "**/luanti"
@@ -10,6 +10,15 @@ users:
           permitted:
           - start: 1700
             end:   1800
+      web:
+        - domain: "youtube.com"
+          permitted:
+          - start: 1800
+            end:   1900
+        - domain: "www.youtube.com"
+          permitted:
+          - start: 1800
+            end:   1900
     tuesday:
       like: monday
     wednesday:

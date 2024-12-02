@@ -3,11 +3,17 @@ use uucore::entries::{Locate, Passwd};
 
 use anyhow::Context;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u32);
 
 pub struct Resolver {
     username_to_uid: HashMap<String, Uid>,
+}
+
+impl Default for Resolver {
+    fn default() -> Self {
+        Resolver::new()
+    }
 }
 
 impl Resolver {
