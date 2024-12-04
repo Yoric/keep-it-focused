@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{collections::HashMap, fmt::Display, ops::Not, path::PathBuf};
 
 use crate::types::{DayOfWeek, Interval};
@@ -10,10 +11,15 @@ use serde::{
 use validator::Validate;
 
 /// The absolute path to a binary (may be a glob).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Binary {
     pub path: PathBuf,
     pub matcher: GlobMatcher,
+}
+impl fmt::Debug for Binary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.path.fmt(f)
+    }
 }
 impl PartialEq for Binary {
     fn eq(&self, other: &Self) -> bool {
@@ -71,13 +77,11 @@ impl Display for Binary {
 pub struct ProcessConfig {
     /// The full path to the binary being watched.
     pub binary: Binary,
-
-    // FIXME: Validate that there are no intersections between intervals.
     pub permitted: Vec<Interval>,
 }
 
 #[derive(Deserialize, Serialize, Validate, Clone, PartialEq, Debug)]
-pub struct WebConfig {
+pub struct WebFilter {
     pub domain: String,
     pub permitted: Vec<Interval>,
 }
@@ -86,13 +90,26 @@ pub struct WebConfig {
 #[serde(untagged)]
 enum DayConfigParser {
     Copy {
+        /// Copy the configuration of another day of the week.
         like: DayOfWeek,
     },
     Instructions {
+        /// Block certain processes during given time periods.
         #[serde(default)]
         processes: Vec<ProcessConfig>,
+
+        /// Block certain IPs during given time periods.
+        ///
+        /// Note: This doesn't work with e.g. youtube.com, as they
+        /// load-balance between millions of IPs.
         #[serde(default)]
-        web: Vec<WebConfig>,
+        ip: Vec<WebFilter>,
+
+        /// Block certain domains during given time periods.
+        ///
+        /// Note: This requires the companion browser extension.
+        #[serde(default)]
+        web: Vec<WebFilter>,
     },
 }
 
@@ -100,7 +117,8 @@ enum DayConfigParser {
 pub struct DayConfig {
     #[serde(default)]
     pub processes: Vec<ProcessConfig>,
-    pub web: Vec<WebConfig>,
+    pub ip: Vec<WebFilter>,
+    pub web: Vec<WebFilter>,
 }
 
 #[derive(Serialize)]
@@ -139,15 +157,17 @@ impl<'de> Deserialize<'de> for Week {
                             day,
                             DayConfig {
                                 processes: d.processes.clone(),
+                                ip: d.ip.clone(),
                                 web: d.web.clone(),
                             },
                         );
                     }
-                    Some(DayConfigParser::Instructions { processes, web }) => {
+                    Some(DayConfigParser::Instructions { processes, ip, web }) => {
                         build_map.insert(
                             day,
                             DayConfig {
                                 processes: processes.clone(),
+                                ip: ip.clone(),
                                 web: web.clone(),
                             },
                         );
