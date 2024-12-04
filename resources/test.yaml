@@ -13,12 +13,12 @@ users:
       web:
         - domain: "youtube.com"
           permitted:
-          - start: 1800
+          - start: 1600
             end:   1900
-        - domain: "www.youtube.com"
+        - domain: "||lemonde.fr"
           permitted:
-          - start: 1800
-            end:   1900
+          - start: 2100
+            end:   2105
     tuesday:
       like: monday
     wednesday:

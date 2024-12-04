@@ -5,7 +5,7 @@ use itertools::Itertools;
 use lazy_regex::lazy_regex;
 use log::{debug, warn};
 
-use crate::{types::{DayOfWeek, TimeOfDay, DAY_ENDS}, uid_resolver::Uid};
+use crate::{types::{TimeOfDay, DAY_ENDS}, uid_resolver::Uid};
 
 #[derive(typed_builder::TypedBuilder)]
 pub struct IPTable {
@@ -16,7 +16,6 @@ pub struct IPTable {
 #[derive(Debug)]
 pub enum Filter<'a> {
     Time {
-        day: Option<DayOfWeek>,
         start: Option<TimeOfDay>,
         end: Option<TimeOfDay>,
     },
@@ -116,15 +115,12 @@ impl Chain<'_> {
         let mut command = iptables();
         command.args(["--table", &self.table, "--append", self.name]);
         match filter {
-            Filter::Time { day: None, start: None, end: None } => {
+            Filter::Time { start: None, end: None } => {
                 // Nothing to do
                 return Ok(())
             }
-            Filter::Time {day, start, end} => {
+            Filter::Time { start, end} => {
                 command.args(["--match", "time"]);
-                if let Some(day) = day {
-                    command.args(["--weekdays", day.as_iptables_arg()]);
-                }
                 if let Some(start) = start {
                     command.args(["--timestart", &start.as_iptables_arg()]);
                 }
