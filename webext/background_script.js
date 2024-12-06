@@ -16,6 +16,11 @@ browser.tabs.onUpdated.addListener(async () => {
 
 // The minimal delay between two updates, in ms.
 const UPDATE_DELAY_MS = 1000 * 60;
+const ONE_MINUTE_MS = 1000 * 60;
+const TWO_MINUTES_MS = 1000 * 60 * 2;
+const THREE_MINUTES_MS = 1000 * 60 * 3;
+const FOUR_MINUTES_MS = 1000 * 60 * 4;
+const FIVE_MINUTES_MS = 1000 * 60 * 5;
 
 // The list of interdictions.
 let InterdictionManager = {
@@ -34,6 +39,8 @@ let InterdictionManager = {
     // The current list of rules.
     _interdictions: new Map(),
 
+    _rules: null,
+
     // Initialize the interdiction manager.
     async init() {
         let rules = await browser.declarativeNetRequest.getSessionRules();
@@ -42,16 +49,21 @@ let InterdictionManager = {
                 this._counter = rule.id + 1;
             }
         }
+        this._rules = rules;
     },
 
     // Add an interdiction.
     //
     // Don't forget to call `flush()`!
-    addInterdiction(interdiction) {
-        console.log("keep-it-focused", "InterdictionManager", "adding interdiction", interdiction);
-        if (!(interdiction instanceof Interdiction)) {
-            throw new TypeError();
+    addInterdiction(domain) {
+        console.log("keep-it-focused", "InterdictionManager", "adding interdiction", domain);
+        for (let rule of this._rules) {
+            if (rule.condition.urlFilter == domain) {
+                console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, skipping");
+                return;
+            }
         }
+        let interdiction = new Interdiction(domain);
         this._addRules.push({
             action: {
                 type: "block"
@@ -208,8 +220,7 @@ let ConfigManager = {
                 continue;
             }
             console.debug("keep-it-focused", "ConfigManager", domain, "is currently forbidden");
-            let interdiction = new Interdiction(domain);
-            InterdictionManager.addInterdiction(interdiction);
+            InterdictionManager.addInterdiction(domain);
         }
 
         // Flush interdictions.
@@ -217,6 +228,35 @@ let ConfigManager = {
 
         // Do we need to update notifications?
         console.debug("keep-it-focused", "ConfigManager", "permissions in progress", permissionsInProgress);
+        for (let [domain, interval] of permissionsInProgress) {
+            let remaining = interval.contains(now);
+            let message;
+            let progress = 1;
+            if (remaining < ONE_MINUTE_MS) {
+                message = `Less than one minute left for ${domain}!`;
+                progress = 20;
+            } else if (remaining < TWO_MINUTES_MS) {
+                message = `Less than 2 minutes left for ${domain}!`;
+                progress = 40;
+            }  else if (remaining < THREE_MINUTES_MS) {
+                message = `Less than 3 minutes left for ${domain}!`;
+                progress = 60;
+            } else if (remaining < FOUR_MINUTES_MS) {
+                message = `Less than 4 minutes left for ${domain}!`;
+                progress = 80;
+            } else if (remaining < FIVE_MINUTES_MS) {
+                message = `Less than 5 minutes left for ${domain}!`;
+                progress = 100;
+            }
+            if (message) {
+                browser.notifications.create({
+                    type: "progress",
+                    title: "Keep it Focused",
+                    message,
+                    progress,
+                });
+            }
+        }
     },
 
     // Fetch instructions if they haven't been fetched in a while.

@@ -3,7 +3,8 @@
 keep-it-focused is a small tool designed to help users focus on their task by making sure
 that some applications or websites are permitted only during specific days/times.
 
-As of this writing, this application works only on Linux + Firefox.
+As of this writing, this application works only on Linux + Firefox. If you wish to expand
+it to other platforms, patches are welcome!
 
 # Setting up
 
@@ -38,7 +39,7 @@ AMO_API_SECRET=(your JWT secret)
 # Install other dependencies.
 $ make init
 
-# Rebuild from source code
+# Rebuild from source code (suprisingly, the addon is the slowest part to build).
 $ make all
 ```
 
