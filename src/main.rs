@@ -60,7 +60,10 @@ enum Command {
     }
 }
 
+/// A daemon designed to help avoid using some programs or websites
+/// during (home)work hours.
 #[derive(Parser, Debug)]
+#[command(version, about)]
 struct Args {
     #[arg(short, long, default_value = DEFAULT_CONFIG_PATH)]
     config: PathBuf,
