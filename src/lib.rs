@@ -15,7 +15,6 @@ use std::{
 use anyhow::Context;
 use itertools::Itertools;
 use log::{debug, info, warn};
-use procfs::ProcError;
 use serde::Serialize;
 use typed_builder::TypedBuilder;
 
@@ -282,36 +281,16 @@ impl KeepItFocused {
             .context("could not access /proc, is this a Linux machine?")?;
 
         for proc in processes {
-            // Examine process.
-            let proc = match proc {
-                Ok(p) => p,
-                Err(err) => {
-                    warn!(target: "procfs", "could not access proc, skipping: {}", err);
-                    continue;
-                }
-            };
-            let uid = match proc.uid() {
-                Ok(uid) => Uid(uid),
-                Err(err) => {
-                    warn!(target: "procfs", "could not access proc uid for process {pid}, skipping: {}", err, pid=proc.pid);
-                    continue;
-                }
-            };
+            // Examine process. We may not have access to all processes, e.g. if they're zombies,
+            // or being killed while we look, etc. We don't really care.
+            let Ok(proc) = proc else { continue };
+            let Ok(uid) = proc.uid() else { continue };
+            let uid = Uid(uid);
             let Some(user_config) = self.config.today_per_user.get(&uid) else {
                 // Nothing to watch for this user.
                 continue;
             };
-            let exe = match proc.exe() {
-                Ok(exe) => exe,
-                Err(err @ ProcError::PermissionDenied(_)) => {
-                    debug!(target: "procfs", "could not access proc exe for process {pid}, skipping: {}", err, pid=proc.pid);
-                    continue;
-                }
-                Err(err) => {
-                    warn!(target: "procfs", "could not access proc exe for process {pid}, skipping: {}", err, pid=proc.pid);
-                    continue;
-                }
-            };
+            let Ok(exe) = proc.exe() else { continue };
 
             debug!("examining process {:?}", exe);
             for (binary, intervals) in &user_config.processes {

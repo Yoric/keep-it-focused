@@ -2,7 +2,7 @@ use std::{path::PathBuf, thread};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use log::{info, set_max_level, warn, LevelFilter};
+use log::{info, warn};
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
@@ -76,7 +76,6 @@ fn main() -> Result<(), anyhow::Error> {
     if connected_to_journal() {
         eprintln!("using journal log");
         JournalLog::new().unwrap().install().unwrap();
-        set_max_level(LevelFilter::Debug);
     } else {
         eprintln!("using simple logger");
         simple_logger::SimpleLogger::new().env().init().unwrap();
