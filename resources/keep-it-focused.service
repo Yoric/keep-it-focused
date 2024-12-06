@@ -1,10 +1,14 @@
 [Unit]
 Description=Prevent some distracting applications from launching outside allowed times.
 
+[Install]
+# Make sure that the daemon is launched on startup.
+WantedBy=graphical.target multi-user.target
+
 [Service]
 User=root
 WorkingDirectory=/root
-ExecStart=/usr/bin/keep-it-focused
+ExecStart=/usr/bin/keep-it-focused run
+Environment=RUST_LOG=info
 Restart=always
 RestartSec=3
-

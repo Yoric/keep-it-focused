@@ -184,7 +184,7 @@ impl<'de> Deserialize<'de> for DayOfWeek {
     }
 }
 
-#[derive(Serialize, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Clone, Copy)]
 pub struct DayOfWeek(u8);
 impl DayOfWeek {
     pub fn now() -> Self {
@@ -211,18 +211,6 @@ impl DayOfWeek {
     pub fn sunday() -> Self {
         DayOfWeek(6)
     }
-    pub fn as_iptables_arg(&self) -> &'static str {
-        match self.0 {
-            0 => "Mo",
-            1 => "Tu",
-            2 => "We",
-            3 => "Th",
-            4 => "Fr",
-            5 => "Sa",
-            6 => "Su",
-            _ => unreachable!(),
-        }
-    }
 }
 impl Display for DayOfWeek {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -237,6 +225,13 @@ impl Display for DayOfWeek {
             other => panic!("invalid value for DayOfWeek: {}", other),
         };
         f.write_str(day)
+    }
+}
+impl Serialize for DayOfWeek {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        serializer.collect_str(&format!("{}", self))
     }
 }
 

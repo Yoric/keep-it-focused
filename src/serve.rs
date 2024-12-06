@@ -1,6 +1,14 @@
-use std::{collections::HashMap, io::Write, net::{TcpListener, TcpStream}, ops::Not, sync::RwLock};
+use std::{
+    collections::HashMap,
+    io::Write,
+    net::{TcpListener, TcpStream},
+    ops::Not,
+    sync::RwLock,
+};
 
 use anyhow::{anyhow, Context};
+
+#[allow(unused)]
 use log::{debug, info, trace, warn};
 use procfs::process::FDTarget;
 
@@ -39,7 +47,9 @@ impl Server {
         Ok(())
     }
     pub fn update_data(&self, data: Data) -> Result<(), anyhow::Error> {
-        let mut lock = self.data.write()
+        let mut lock = self
+            .data
+            .write()
             .map_err(|_| anyhow!("failed to acquire lock"))?;
         debug!("updating data {:?}", data);
         *lock = data;
@@ -47,7 +57,8 @@ impl Server {
     }
 
     fn handle_stream(&self, mut stream: TcpStream) -> Result<(), anyhow::Error> {
-        let peer = stream.peer_addr()
+        let peer = stream
+            .peer_addr()
             .context("stream doesn't have an address")?;
 
         // Don't answer requests from other hosts.
@@ -66,19 +77,19 @@ impl Server {
         let tcp = procfs::net::tcp()
             .unwrap_or_default()
             .into_iter()
-            .chain(procfs::net::tcp6()
-                .unwrap_or_default());
+            .chain(procfs::net::tcp6().unwrap_or_default());
         for entry in tcp {
             if entry.local_address == peer {
                 inode_local = Some(entry.inode);
-                break
+                break;
             }
         }
-        let Some(inode_local) = inode_local else { return Err(anyhow!("failed to find local inode")) };
+        let Some(inode_local) = inode_local else {
+            return Err(anyhow!("failed to find local inode"));
+        };
 
         // Find the process owning this inode.
-        let processes = procfs::process::all_processes()
-            .context("could not access /proc")?;
+        let processes = procfs::process::all_processes().context("could not access /proc")?;
         let mut owner = None;
         for process in processes {
             let Ok(process) = process else { continue };
@@ -92,14 +103,18 @@ impl Server {
                         let Ok(uid) = process.uid() else { continue };
                         debug!("found owner {} for local inode", uid);
                         owner = Some(uid);
-                        break
+                        break;
                     }
                 }
             }
         }
-        let Some(owner) = owner else { return Err(anyhow!("failed to find owner"))};
+        let Some(owner) = owner else {
+            return Err(anyhow!("failed to find owner"));
+        };
 
-        let contents = self.data.read()
+        let contents = self
+            .data
+            .read()
             .map_err(|_| anyhow!("couldn't acquire rwlock"))?
             .get(&Uid(owner))
             .cloned()
@@ -108,11 +123,11 @@ impl Server {
         let response =
         format!("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {length}\r\n\r\n{contents}");
         debug!("response {}", response);
-        stream.write_all(response.as_bytes())
+        stream
+            .write_all(response.as_bytes())
             .context("failed to respond with OK")?;
 
         debug!("responded");
-        stream.flush()
-            .context("failed to flush")
+        stream.flush().context("failed to flush")
     }
 }

@@ -1,19 +1,18 @@
-mod config;
+pub mod config;
+
+#[cfg(feature = "ip_tables")]
+mod iptables;
 mod notify;
+mod serve;
+pub mod setup;
 mod types;
 mod uid_resolver;
-mod iptables;
-pub mod serve;
-
 
 use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    rc::Rc, sync::Arc, time::SystemTime,
+    collections::HashMap, ops::Not, path::{Path, PathBuf}, rc::Rc, sync::Arc, time::SystemTime
 };
 
 use anyhow::Context;
-use iptables::IPTable;
 use itertools::Itertools;
 use log::{debug, info, warn};
 use procfs::ProcError;
@@ -54,13 +53,12 @@ impl UserInstructions {
 
 #[derive(Debug)]
 struct Precompiled {
-    today_per_user: HashMap<Uid, UserInstructions>
+    today_per_user: HashMap<Uid, UserInstructions>,
 }
-
 
 #[derive(TypedBuilder, Debug)]
 pub struct Options {
-    #[builder(default=false)]
+    #[builder(default = false)]
     pub ip_tables: bool,
     pub port: u16,
     pub path: PathBuf,
@@ -79,25 +77,27 @@ impl KeepItFocused {
         let config = Self::load_config(&options.path)?;
         let data = Self::serialize(&config);
         let server = Arc::new(serve::Server::new(data, options.port));
-        let mut me  = Self {
+        #[allow(unused_mut)]
+        let mut me = Self {
             options,
             config,
             server,
             last_updated: SystemTime::now(),
         };
-        if me.options.ip_tables {
-            me.apply_ip_tables()?;
-        }
+        me.apply_ip_tables()?;
         Ok(me)
     }
 
     fn serialize(config: &Precompiled) -> HashMap<Uid, String> {
         debug!("serializing {:?}", config);
-        let data = config.today_per_user
+        let data = config
+            .today_per_user
             .iter()
-            .map(|(uid, instructions)| (*uid, {
-                serde_json::to_string(&instructions.web).expect("error during serialization")
-            }))
+            .map(|(uid, instructions)| {
+                (*uid, {
+                    serde_json::to_string(&instructions.web).expect("error during serialization")
+                })
+            })
             .collect();
         data
     }
@@ -113,7 +113,8 @@ impl KeepItFocused {
             let config = Self::load_config(&self.options.path)?;
             let data = Self::serialize(&config);
             self.config = config;
-            self.server.update_data(data)
+            self.server
+                .update_data(data)
                 .context("failed to register data to serve")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
@@ -124,73 +125,108 @@ impl KeepItFocused {
         self.find_offending_processes()
     }
 
+    #[cfg(not(feature = "ip_tables"))]
     fn apply_ip_tables(&mut self) -> Result<(), anyhow::Error> {
-        info!("populating web filter: {}", "start");
-        remove_ip_tables(IP_TABLES_PREFIX)?;
-    
-        info!("populating web filter: {}", "compiling chains");
-        // Compile to individual chains.
-        let mut chains = Vec::new();
-        for (uid, instructions) in &self.config.today_per_user {
-            for (domain, rejected) in &instructions.ips {
-                for rejection in rejected {
-                    chains.push(Filter {
-                        uid: *uid,
-                        domain: Domain::Destination(domain.clone()),
-                        rejection: rejection.clone(),
-                    });
-                    chains.push(Filter {
-                        uid: *uid,
-                        domain: Domain::Source(domain.clone()),
-                        rejection: rejection.clone(),
-                    });
-                }
-            }
+        if self
+            .config
+            .today_per_user
+            .values()
+            .any(|user| user.ips.is_empty().not())
+        {
+            warn!("this binary was compiled WITHOUT support for ip tables")
         }
-    
-        for (index, filter) in chains.into_iter().enumerate() {
-            let chain_name = format!("{IP_TABLES_PREFIX}{index}");
-            info!("populating web filter: {}", "inserting chain");
-            // Create new chain.
-            let mut chain = IPTable::builder()
-                .build()
-                .create(&chain_name)
-                .with_context(|| format!("failed to create table for {filter:?}"))?;
-    
-            // Populate it.
-    
-            // 1. If we're not during an interval of interest, this chain doesn't apply.
-            chain.append(iptables::Filter::Time { start: Some(filter.rejection.0.start), end: Some(filter.rejection.0.end) })
-                .with_context(|| format!("failed to create time rule for {filter:?}"))?;
-    
-            // 2. If this is not a user we're watching, this chain doesn't apply.
-            chain.append(iptables::Filter::Owner { uid: filter.uid })
-                .with_context(|| format!("failed to create user rule for {filter:?}"))?;
-    
-            // 3. If this is not a domain we're watching, this chain doesn't apply.
-            match filter.domain {
-                Domain::Source(ref source) =>
-                    chain.append(iptables::Filter::Source { domain: source }),
-                Domain::Destination(ref dest) =>
-                    chain.append(iptables::Filter::Destination { domain: dest }),
-            }
-               .with_context(|| format!("failed to create domain rule for {filter:?}"))?;
-    
-            // ... If the chain still applies, it means that the domain is currently forbidden for the user!
-            chain.finish(iptables::Finish::Drop)
-                .with_context(|| format!("failed to terminate rule for {filter:?}"))?;
-        }
-        info!("populating web filter: {}", "done");
         Ok(())
     }
-    
+
+    #[cfg(feature = "ip_tables")]
+    fn apply_ip_tables(&mut self) -> Result<(), anyhow::Error> {
+        #[derive(Debug)]
+            enum Domain {
+                Source(String),
+                Destination(String),
+            }
+            #[derive(Debug)]
+            struct Filter {
+                uid: Uid,
+                domain: Domain,
+                rejection: RejectedInterval,
+            }
+            
+
+            info!("populating web filter: {}", "start");
+            remove_ip_tables(IP_TABLES_PREFIX)?;
+
+            info!("populating web filter: {}", "compiling chains");
+            // Compile to individual chains.
+            let mut chains = Vec::new();
+            for (uid, instructions) in &self.config.today_per_user {
+                for (domain, rejected) in &instructions.ips {
+                    for rejection in rejected {
+                        chains.push(Filter {
+                            uid: *uid,
+                            domain: Domain::Destination(domain.clone()),
+                            rejection: rejection.clone(),
+                        });
+                        chains.push(Filter {
+                            uid: *uid,
+                            domain: Domain::Source(domain.clone()),
+                            rejection: rejection.clone(),
+                        });
+                    }
+                }
+            }
+
+            for (index, filter) in chains.into_iter().enumerate() {
+                let chain_name = format!("{IP_TABLES_PREFIX}{index}");
+                info!("populating web filter: {}", "inserting chain");
+                // Create new chain.
+                let mut chain = IPTable::builder()
+                    .build()
+                    .create(&chain_name)
+                    .with_context(|| format!("failed to create table for {filter:?}"))?;
+
+                // Populate it.
+
+                // 1. If we're not during an interval of interest, this chain doesn't apply.
+                chain
+                    .append(iptables::Filter::Time {
+                        start: Some(filter.rejection.0.start),
+                        end: Some(filter.rejection.0.end),
+                    })
+                    .with_context(|| format!("failed to create time rule for {filter:?}"))?;
+
+                // 2. If this is not a user we're watching, this chain doesn't apply.
+                chain
+                    .append(iptables::Filter::Owner { uid: filter.uid })
+                    .with_context(|| format!("failed to create user rule for {filter:?}"))?;
+
+                // 3. If this is not a domain we're watching, this chain doesn't apply.
+                match filter.domain {
+                    Domain::Source(ref source) => {
+                        chain.append(iptables::Filter::Source { domain: source })
+                    }
+                    Domain::Destination(ref dest) => {
+                        chain.append(iptables::Filter::Destination { domain: dest })
+                    }
+                }
+                .with_context(|| format!("failed to create domain rule for {filter:?}"))?;
+
+                // ... If the chain still applies, it means that the domain is currently forbidden for the user!
+                chain
+                    .finish(iptables::Finish::Drop)
+                    .with_context(|| format!("failed to terminate rule for {filter:?}"))?;
+            }
+            info!("populating web filter: {}", "done");
+        Ok(())
+    }
+
     fn load_config(path: &Path) -> Result<Precompiled, anyhow::Error> {
         info!("reading config: {}", "start");
         let reader = std::fs::File::open(path)
             .with_context(|| format!("could not open file {}", path.to_string_lossy()))?;
         let config: Config = serde_yaml::from_reader(reader)
             .with_context(|| format!("could not parse file {}", path.to_string_lossy()))?;
-    
+
         info!("reading config: {}", "resolving");
         let today = DayOfWeek::now();
         let mut resolver = uid_resolver::Resolver::new();
@@ -203,7 +239,7 @@ impl KeepItFocused {
             let Some(day_config) = week.0.remove(&today) else {
                 continue;
             };
-            let mut this_user =  UserInstructions::new(user.clone());
+            let mut this_user = UserInstructions::new(user.clone());
             for proc in day_config.processes {
                 let intervals = proc.permitted.into_iter().map(AcceptedInterval);
                 this_user.processes.push((proc.binary, intervals.collect()))
@@ -240,11 +276,11 @@ impl KeepItFocused {
             // Nothing to do for today.
             return Ok(());
         }
-    
+
         let now = TimeOfDay::from(chrono::Local::now());
         let processes = procfs::process::all_processes()
             .context("could not access /proc, is this a Linux machine?")?;
-    
+
         for proc in processes {
             // Examine process.
             let proc = match proc {
@@ -276,7 +312,7 @@ impl KeepItFocused {
                     continue;
                 }
             };
-    
+
             debug!("examining process {:?}", exe);
             for (binary, intervals) in &user_config.processes {
                 if !binary.matcher.is_match(&exe) {
@@ -333,23 +369,16 @@ impl KeepItFocused {
             }
         }
         Ok(())
-    }    
+    }
 }
 
 
-
-#[derive(Debug)]
-enum Domain {
-    Source(String),
-    Destination(String),
-}
-#[derive(Debug)]
-struct Filter {
-    uid: Uid,
-    domain: Domain,
-    rejection: RejectedInterval,
+#[cfg(not(feature = "ip_tables"))]
+pub fn remove_ip_tables(_: &str) -> Result<(), anyhow::Error> {
+Err(anyhow::anyhow!("this application was compiled without support for iptables"))
 }
 
+#[cfg(feature = "ip_tables")]
 pub fn remove_ip_tables(prefix: &str) -> Result<(), anyhow::Error> {
     // We want to reset the iptables chains we use for this process.
     // The only way to do this, apparently, is to request the list and filter.

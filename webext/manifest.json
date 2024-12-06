@@ -1,0 +1,26 @@
+{
+	"manifest_version": 2,
+	"name": "Keep It Focused",
+	"description": "A small tool to avoid visiting the wrong websites when it's time to work. CURRENTLY HIGHLY EXPERIMENTAL.",
+	"version": "0.0.3",
+	"browser_specific_settings": {
+		"gecko": {
+		  "id": "keep-it-focused@yoric.xyz",
+		  "strict_min_version": "100.0"
+		}
+	  },
+	"icons": {
+		"64": "icons/icon.png"
+	},
+	"background": {
+		"scripts": [
+			"background_script.js"
+		]
+	},
+	"permissions": [
+		"declarativeNetRequest",
+		"notifications",
+		"http://127.0.0.1:7878",
+		"http://localhost:7878"
+	]
+}

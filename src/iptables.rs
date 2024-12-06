@@ -1,11 +1,19 @@
-use std::{io::{BufRead, BufReader, Cursor}, ops::Not, process::Command, rc::Rc};
+use std::{
+    io::{BufRead, BufReader, Cursor},
+    ops::Not,
+    process::Command,
+    rc::Rc,
+};
 
 use anyhow::Context;
 use itertools::Itertools;
 use lazy_regex::lazy_regex;
 use log::{debug, warn};
 
-use crate::{types::{TimeOfDay, DAY_ENDS}, uid_resolver::Uid};
+use crate::{
+    types::{TimeOfDay, DAY_ENDS},
+    uid_resolver::Uid,
+};
 
 #[derive(typed_builder::TypedBuilder)]
 pub struct IPTable {
@@ -34,15 +42,28 @@ fn iptables() -> Command {
     Command::new("iptables")
 }
 fn run(mut command: Command) -> Result<Vec<u8>, anyhow::Error> {
-    let args = command.get_args().map(|s| s.to_string_lossy().to_string()).collect_vec();
-    let output = command.output()
+    let args = command
+        .get_args()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect_vec();
+    let output = command
+        .output()
         .with_context(|| format!("failed to launch iptables command {:?}", args))?;
     if output.status.success().not() {
         let err = String::from_utf8_lossy(&output.stderr);
         warn!("iptables failed {}", err);
-        let err =  match output.status.code() {
-            None => anyhow::anyhow!("iptables command interrupted by signal {:?}: {}", args, output.status.to_string()),
-            Some(code) => anyhow::anyhow!("error ({code}: {}) executing iptables command {:?}: {}", errno::Errno(code), args, output.status.to_string())
+        let err = match output.status.code() {
+            None => anyhow::anyhow!(
+                "iptables command interrupted by signal {:?}: {}",
+                args,
+                output.status.to_string()
+            ),
+            Some(code) => anyhow::anyhow!(
+                "error ({code}: {}) executing iptables command {:?}: {}",
+                errno::Errno(code),
+                args,
+                output.status.to_string()
+            ),
         };
         return Err(err);
     }
@@ -74,7 +95,7 @@ impl IPTable {
             if let Some(prefix) = prefix {
                 if chain_name.starts_with(prefix).not() {
                     continue;
-                };    
+                };
             }
             debug!("we're interested in chain {:?}", chain_name);
             instances.push(chain_name.to_string());
@@ -91,16 +112,17 @@ impl IPTable {
         command.args(["--table", &self.table, "--delete-chain", chain]);
         run(command)?;
         Ok(())
-
     }
     pub fn create(self, chain: &str) -> Result<Chain, anyhow::Error> {
         let mut command = iptables();
         command.args(["--table", &self.table, "--new-chain", chain]);
         run(command)?;
-        Ok(Chain { table: self.table.clone(), name: chain })
+        Ok(Chain {
+            table: self.table.clone(),
+            name: chain,
+        })
     }
 }
-
 
 pub enum Finish {
     Drop,
@@ -115,11 +137,14 @@ impl Chain<'_> {
         let mut command = iptables();
         command.args(["--table", &self.table, "--append", self.name]);
         match filter {
-            Filter::Time { start: None, end: None } => {
+            Filter::Time {
+                start: None,
+                end: None,
+            } => {
                 // Nothing to do
-                return Ok(())
+                return Ok(());
             }
-            Filter::Time { start, end} => {
+            Filter::Time { start, end } => {
                 command.args(["--match", "time"]);
                 if let Some(start) = start {
                     command.args(["--timestart", &start.as_iptables_arg()]);
@@ -132,10 +157,10 @@ impl Chain<'_> {
             }
             Filter::Owner { uid } => {
                 command.args(["--match", "owner", "--uid-owner", &format!("{}", uid.0)]);
-            },
+            }
             Filter::Source { domain } => {
                 command.args(["--source", domain]);
-            },
+            }
             Filter::Destination { domain } => {
                 command.args(["--destination", domain]);
             }
@@ -148,8 +173,14 @@ impl Chain<'_> {
             Finish::Drop => "DROP",
         };
         let mut command = iptables();
-        command.args(["--table", &self.table, "--append", self.name,
-        "--jump", jump]);
+        command.args([
+            "--table",
+            &self.table,
+            "--append",
+            self.name,
+            "--jump",
+            jump,
+        ]);
         run(command)?;
         Ok(())
     }

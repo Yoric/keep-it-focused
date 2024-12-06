@@ -186,7 +186,7 @@ impl<'de> Deserialize<'de> for Week {
     }
 }
 
-#[derive(Deserialize, Serialize, Validate)]
+#[derive(Deserialize, Serialize, Validate, Default)]
 pub struct Config {
     #[serde(default)]
     pub users: HashMap<String /*username*/, Week>,
