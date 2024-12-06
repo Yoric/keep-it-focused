@@ -44,6 +44,7 @@ let InterdictionManager = {
     // Initialize the interdiction manager.
     async init() {
         let rules = await browser.declarativeNetRequest.getSessionRules();
+        console.log("keep-it-focused", "InterdictionManager", "existing rules", rules);
         for (let rule of rules) {
             if (rule.id >= this._counter) {
                 this._counter = rule.id + 1;
@@ -56,9 +57,15 @@ let InterdictionManager = {
     //
     // Don't forget to call `flush()`!
     addInterdiction(domain) {
-        console.log("keep-it-focused", "InterdictionManager", "adding interdiction", domain);
+        console.log("keep-it-focused", "InterdictionManager", "adding interdiction", domain, "to", this._rules);
         for (let rule of this._rules) {
             if (rule.condition.urlFilter == domain) {
+                console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, skipping");
+                return;
+            }
+        }
+        for (let [existingDomain, _] of this._interdictions) {
+            if (existingDomain == domain) {
                 console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, skipping");
                 return;
             }
@@ -69,7 +76,7 @@ let InterdictionManager = {
                 type: "block"
             },
             condition: {
-                urlFilter: interdiction.domain
+                urlFilter: "||" + interdiction.domain
             },
             id: interdiction.id,
         });
@@ -97,9 +104,33 @@ let InterdictionManager = {
         };
         console.log("keep-it-focused", "InterdictionManager", "flushing", update);
         await browser.declarativeNetRequest.updateSessionRules(update);
+        console.log("keep-it-focused", "InterdictionManager", "rules after flush", await browser.declarativeNetRequest.getSessionRules());
+
+        // Now unload tabs.
+        console.log("keep-it-focused", "InterdictionManager", "looking at tabs");
+        let discard = [];
+        try {
+            let currentTabs = await browser.tabs.query({});
+            console.log("keep-it-focused", "InterdictionManager", "found tabs", currentTabs);
+            for (let oneTab of currentTabs) {
+                let tabURL = new URL(oneTab.url);
+                console.debug("keep-it-focused", "InterdictionManager", "checking tab url", tabURL.hostname);
+                // FIXME: We can probably improve the performance of this, e.g. by pre-compiling a regex.
+                for (let interdictionDomain of this._interdictions.keys()) {
+                    if (tabURL.hostname.includes(interdictionDomain)) {
+                        console.debug("keep-it-focused", "InterdictionManager", "discarding", tabURL.hostname);
+                        discard.push(oneTab.id);
+                        break;
+                    }
+                }
+            }
+            browser.tabs.discard(discard);
+        } catch (ex) {
+            console.error("keep-it-focused", "InterdictionManager", "error while discarding tabs", discard, ex);
+        }
+
         this._addRules.length = 0;
         this._removeRuleIds.length = 0;
-        console.log("keep-it-focused", "InterdictionManager", "rules after flush", await browser.declarativeNetRequest.getSessionRules());
     },
 
     // The current list of interdictions. Please do not modify this.
