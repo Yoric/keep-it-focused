@@ -230,7 +230,8 @@ impl Display for DayOfWeek {
 impl Serialize for DayOfWeek {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer {
+        S: serde::Serializer,
+    {
         serializer.collect_str(&format!("{}", self))
     }
 }
@@ -260,20 +261,26 @@ impl Interval {
     }
 }
 
-pub fn resolve_intervals(mut intervals: Vec<Interval>) -> Vec<Interval> {
-    intervals.sort_by_key(|interval| interval.start);
-    let mut normalized: Vec<Interval> = vec![];
-    for interval in intervals {
-        if let Some(latest) = normalized.last_mut() {
-            // Merge two contiguous intervals.
-            if latest.end >= interval.start {
-                latest.end = interval.end;
-                continue;
+#[derive(Debug, Clone, Serialize)]
+pub struct AcceptedInterval(pub Interval);
+impl AcceptedInterval {
+    // Simplify a bunch of accepted intervals into rejected intervals.
+    pub fn resolve(mut intervals: Vec<AcceptedInterval>) -> Vec<AcceptedInterval> {
+        intervals.sort_by_key(|interval| interval.0.start);
+        let mut normalized: Vec<AcceptedInterval> = vec![];
+        for interval in intervals {
+            if let Some(latest) = normalized.last_mut() {
+                // Merge two contiguous intervals.
+                if latest.0.end >= interval.0.start {
+                    latest.0.end = interval.0.end;
+                    continue;
+                }
             }
+            // Otherwise, append interval
+            normalized.push(interval.clone());
         }
-        normalized.push(interval);
+        normalized
     }
-    normalized
 }
 
 /// From a list of intervals within a day, return the list of complementary intervals,
@@ -297,39 +304,44 @@ pub fn resolve_intervals(mut intervals: Vec<Interval>) -> Vec<Interval> {
 ///    }
 /// ]);
 /// ```
-pub fn complement_intervals(intervals: Vec<Interval>) -> Vec<Interval> {
-    let normalized = resolve_intervals(intervals);
+#[derive(Debug, Clone, Serialize)]
+pub struct RejectedInterval(pub Interval);
+impl RejectedInterval {
+    // Simplify a bunch of accepted intervals into rejected intervals.
+    pub fn complement(intervals: Vec<AcceptedInterval>) -> Vec<RejectedInterval> {
+        let normalized = AcceptedInterval::resolve(intervals);
 
-    // Obtain the intervals during which use is forbidden.
-    let mut complement = Vec::new();
-    if normalized.is_empty() {
-        complement.push(Interval {
-            start: TimeOfDay {
-                hours: 0,
-                minutes: 0,
-            },
-            end: TimeOfDay {
-                hours: 24,
-                minutes: 0,
-            },
-        });
-    } else {
-        let mut latest_in = DAY_BEGINS;
-        for interval in normalized {
-            if interval.start > latest_in {
-                complement.push(Interval {
-                    start: latest_in,
-                    end: interval.start,
-                });
+        // Obtain the intervals during which use is forbidden.
+        let mut complement = Vec::new();
+        if normalized.is_empty() {
+            complement.push(RejectedInterval(Interval {
+                start: TimeOfDay {
+                    hours: 0,
+                    minutes: 0,
+                },
+                end: TimeOfDay {
+                    hours: 24,
+                    minutes: 0,
+                },
+            }));
+        } else {
+            let mut latest_in = DAY_BEGINS;
+            for interval in normalized {
+                if interval.0.start > latest_in {
+                    complement.push(RejectedInterval(Interval {
+                        start: latest_in,
+                        end: interval.0.start,
+                    }));
+                }
+                latest_in = interval.0.end;
             }
-            latest_in = interval.end;
+            if latest_in < DAY_ENDS {
+                complement.push(RejectedInterval(Interval {
+                    start: latest_in,
+                    end: DAY_ENDS,
+                }));
+            }
         }
-        if latest_in < DAY_ENDS {
-            complement.push(Interval {
-                start: latest_in,
-                end: DAY_ENDS,
-            });
-        }
+        complement
     }
-    complement
 }

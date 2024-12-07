@@ -8,7 +8,6 @@ use serde::{
     de::{Unexpected, Visitor},
     Deserialize, Serialize,
 };
-use validator::Validate;
 
 /// The absolute path to a binary (may be a glob).
 #[derive(Clone)]
@@ -73,14 +72,14 @@ impl Display for Binary {
     }
 }
 
-#[derive(Deserialize, Serialize, Validate, Clone, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct ProcessConfig {
     /// The full path to the binary being watched.
     pub binary: Binary,
     pub permitted: Vec<Interval>,
 }
 
-#[derive(Deserialize, Serialize, Validate, Clone, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct WebFilter {
     pub domain: String,
     pub permitted: Vec<Interval>,
@@ -186,10 +185,17 @@ impl<'de> Deserialize<'de> for Week {
     }
 }
 
-#[derive(Deserialize, Serialize, Validate, Default)]
+/// The contents of /etc/keep-it-focused.yaml, covering the entire week.
+#[derive(Deserialize, Serialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub users: HashMap<String /*username*/, Week>,
+}
+
+/// The contents of a patch file, valid only for one day.
+#[derive(Deserialize, Serialize, Default)]
+pub struct Extension {
+    pub users: HashMap<String, DayConfig>,
 }
 
 #[cfg(test)]

@@ -15,6 +15,8 @@ use crate::{
     uid_resolver::Uid,
 };
 
+const IP_TABLES_PREFIX: &str = "KEEP-IT-FOCUSED";
+
 #[derive(typed_builder::TypedBuilder)]
 pub struct IPTable {
     #[builder(default=Rc::new("filter".to_string()))]

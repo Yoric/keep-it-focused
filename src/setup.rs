@@ -1,6 +1,10 @@
 //! Support for `keep-it-focused setup`.
 
-use std::{collections::HashMap, io::{ErrorKind, Write}, path::Path};
+use std::{
+    collections::HashMap,
+    io::{ErrorKind, Write},
+    path::Path,
+};
 
 use anyhow::Context;
 use log::{debug, info, warn};
@@ -53,7 +57,7 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     }
     #[derive(Deserialize, Serialize, Default)]
     struct Policies {
-        #[serde(rename="ExtensionSettings")]
+        #[serde(rename = "ExtensionSettings")]
         extension_settings: HashMap<String, ExtensionSettings>,
         #[serde(flatten)]
         _others: serde_json::Value,
@@ -67,13 +71,13 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     }
     #[derive(Deserialize, Serialize)]
     enum InstallationMode {
-        #[serde(rename="allowed")]
+        #[serde(rename = "allowed")]
         Allowed,
-        #[serde(rename="blocked")]
+        #[serde(rename = "blocked")]
         Blocked,
-        #[serde(rename="force_installed")]
+        #[serde(rename = "force_installed")]
         ForceInstalled,
-        #[serde(rename="normal_installed")]
+        #[serde(rename = "normal_installed")]
         NormalInstalled,
     }
 
@@ -83,22 +87,20 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     // Load /etc/firefox/policies.json.
     debug!("reading {}", CONFIG_PATH);
     let mut config: Configuration = match std::fs::File::open(CONFIG_PATH) {
-        Ok(file) => {
-            serde_json::from_reader(
-                std::io::BufReader::new(file)
-            ).context("failed to parse policies.json")?
-        },
+        Ok(file) => serde_json::from_reader(std::io::BufReader::new(file))
+            .context("failed to parse policies.json")?,
         Err(err) if err.kind() == ErrorKind::NotFound => {
             debug!("file is empty, creating");
             Configuration::default()
         }
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to open {CONFIG_PATH}"))
-        }
+        Err(err) => return Err(err).with_context(|| format!("failed to open {CONFIG_PATH}")),
     };
-        
+
     // Patch content.
-    let extension_settings = config.policies.extension_settings.entry(EXTENSION_ID.to_string())
+    let extension_settings = config
+        .policies
+        .extension_settings
+        .entry(EXTENSION_ID.to_string())
         .or_default();
     extension_settings.install_url = Some(INSTALL_URL.to_string());
     extension_settings.installation_mode = Some(InstallationMode::ForceInstalled);
@@ -131,26 +133,38 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
     const DAEMON_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
     info!("creating empty config at {DAEMON_CONFIG_PATH}");
     if std::fs::metadata(DAEMON_CONFIG_PATH).is_ok() {
-        warn!("file {} already exists, we're not overwriting it", DAEMON_CONFIG_PATH);
-        let reader = std::fs::File::open(DAEMON_CONFIG_PATH)
-            .with_context(|| format!("could not open existing configuration {}", DAEMON_CONFIG_PATH))?;
-        let config: config::Config = serde_yaml::from_reader(reader)
-            .with_context(|| format!("could not parse existing configuration {}", DAEMON_CONFIG_PATH))?;
-        info!("the existing configuration seems syntactically correct\n{}", serde_yaml::to_string(&config).expect("failed to display config"));
+        warn!(
+            "file {} already exists, we're not overwriting it",
+            DAEMON_CONFIG_PATH
+        );
+        let reader = std::fs::File::open(DAEMON_CONFIG_PATH).with_context(|| {
+            format!(
+                "could not open existing configuration {}",
+                DAEMON_CONFIG_PATH
+            )
+        })?;
+        let config: config::Config = serde_yaml::from_reader(reader).with_context(|| {
+            format!(
+                "could not parse existing configuration {}",
+                DAEMON_CONFIG_PATH
+            )
+        })?;
+        info!(
+            "the existing configuration seems syntactically correct\n{}",
+            serde_yaml::to_string(&config).expect("failed to display config")
+        );
     } else {
         let mut file = std::fs::File::create_new(SYSTEMD_CONFIG_PATH)
             .with_context(|| format!("failed to create {SYSTEMD_CONFIG_PATH}"))?;
         let config = config::Config::default();
-        let data = serde_yaml::to_string(&config)
-            .expect("cannot serialize an empty config?");
+        let data = serde_yaml::to_string(&config).expect("cannot serialize an empty config?");
         file.write_all(data.as_bytes())
             .with_context(|| format!("failed to write {SYSTEMD_CONFIG_PATH}"))?;
     }
 
-
     // Write /etc/systemd/system/keep-it-focused.service
     info!("writing down system configuration to start daemon automatically");
-    const SYSTEMD_DATA: &str = r"
+    const SYSTEMD_DATA: &str = r#"
     [Unit]
     Description=Prevent some distracting applications from launching outside allowed times.
     
@@ -165,10 +179,13 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
     Environment=RUST_LOG=info
     Restart=always
     RestartSec=3
-    ";
+    "#;
     const SYSTEMD_CONFIG_PATH: &str = "/etc/systemd/system/keep-it-focused.service";
     if std::fs::metadata(SYSTEMD_CONFIG_PATH).is_ok() {
-        warn!("file {} already exists, we're not overwriting it", SYSTEMD_CONFIG_PATH);
+        warn!(
+            "file {} already exists, we're not overwriting it",
+            SYSTEMD_CONFIG_PATH
+        );
     } else {
         let mut file = std::fs::File::create_new(SYSTEMD_CONFIG_PATH)
             .with_context(|| format!("failed to create {SYSTEMD_CONFIG_PATH}"))?;
@@ -179,7 +196,7 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
     // Prepare for restart.
     info!("preparing daemon for next startup");
     let mut cmd = std::process::Command::new("systemctl");
-        cmd.args(["enable", "keep-it-focused"]);
+    cmd.args(["enable", "keep-it-focused"]);
     cmd.spawn().context("error in `systemctl enable`")?;
 
     // Prepare for start.

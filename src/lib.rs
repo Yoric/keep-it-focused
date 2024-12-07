@@ -9,48 +9,49 @@ mod types;
 mod uid_resolver;
 
 use std::{
-    collections::HashMap, ops::Not, path::{Path, PathBuf}, rc::Rc, sync::Arc, time::SystemTime
+    collections::HashMap,
+    ops::Not,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::SystemTime,
 };
 
 use anyhow::Context;
+use chrono::{DateTime, Datelike, Local};
+use config::Extension;
 use itertools::Itertools;
 use log::{debug, info, warn};
 use serde::Serialize;
 use typed_builder::TypedBuilder;
+use types::{AcceptedInterval, RejectedInterval};
 
 use crate::{
     config::{Binary, Config},
     notify::notify,
-    types::{DayOfWeek, Interval, TimeOfDay},
+    types::{DayOfWeek, TimeOfDay},
     uid_resolver::Uid,
 };
-
-pub const IP_TABLES_PREFIX: &str = "KEEP-IT-FOCUSED-";
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AcceptedInterval(Interval);
-#[derive(Debug, Clone, Serialize)]
-pub struct RejectedInterval(Interval);
 
 #[derive(Serialize, Debug)]
 pub struct UserInstructions {
     user_name: Rc<String>,
-    processes: Vec<(Binary, /* accepted */ Box<[AcceptedInterval]>)>,
-    ips: Vec<(String, /* rejected */ Box<[RejectedInterval]>)>,
-    web: HashMap</* domains */ String, /* rejected */ Box<[AcceptedInterval]>>,
+    processes: Vec<(Binary, /* accepted */ Vec<AcceptedInterval>)>,
+    ips: HashMap<String, /* rejected */ Vec<RejectedInterval>>,
+    web: HashMap</* domains */ String, /* rejected */ Vec<AcceptedInterval>>,
 }
 impl UserInstructions {
     pub fn new(user_name: Rc<String>) -> Self {
         UserInstructions {
             user_name,
             processes: Vec::new(),
-            ips: Vec::new(),
+            ips: HashMap::new(),
             web: HashMap::new(),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Precompiled {
     today_per_user: HashMap<Uid, UserInstructions>,
 }
@@ -60,30 +61,55 @@ pub struct Options {
     #[builder(default = false)]
     pub ip_tables: bool,
     pub port: u16,
-    pub path: PathBuf,
+
+    pub main_config: PathBuf,
+    pub extensions_dir: PathBuf,
 }
 
 pub struct KeepItFocused {
+    // Runtime options.
     options: Options,
+
+    // A compiled instance of the configuration, collated from all the currently valid configuraiton
+    // files.
     config: Precompiled,
+
+    // A minimal HTTP server running on its own thread to serve web filters to web browsers.
     server: Arc<serve::Server>,
-    last_updated: SystemTime,
+
+    cache: HashMap<PathBuf, CacheEntry>,
+}
+
+#[derive(Debug)]
+struct CacheEntry {
+    // When the file was last read.
+    latest_update: SystemTime,
+
+    // Contents last read from that file.
+    config: HashMap<String /* username */, config::DayConfig>,
+}
+impl Default for CacheEntry {
+    fn default() -> Self {
+        Self {
+            latest_update: SystemTime::UNIX_EPOCH,
+            config: HashMap::new(),
+        }
+    }
 }
 
 impl KeepItFocused {
     pub fn try_new(options: Options) -> Result<Self, anyhow::Error> {
         debug!("options: {:?}", options);
-        let config = Self::load_config(&options.path)?;
-        let data = Self::serialize(&config);
+        let data = HashMap::new();
         let server = Arc::new(serve::Server::new(data, options.port));
         #[allow(unused_mut)]
         let mut me = Self {
             options,
-            config,
-            server,
-            last_updated: SystemTime::now(),
+            server, // Data will be filled once we have executed `load_config()`.
+            cache: HashMap::new(), // Data will be filled once we have executed `load_config()`.
+            config: Precompiled::default(), // Data will be filled once we have executed `load_config()`.
         };
-        me.apply_ip_tables()?;
+        me.tick()?;
         Ok(me)
     }
 
@@ -102,24 +128,20 @@ impl KeepItFocused {
     }
 
     pub fn tick(&mut self) -> Result<(), anyhow::Error> {
-        // Note: This is technically subject to fs race condition, but we don't care all that
-        // much, things will stabilize at the next tick.
-        let latest_change = std::fs::metadata(&self.options.path)
-            .context("could not find configuration")?
-            .modified()
-            .context("no latest modification time")?;
-        if latest_change >= self.last_updated {
-            let config = Self::load_config(&self.options.path)?;
+        // Load any change.
+        let (has_changes, config) = self
+            .load_config()
+            .context("failed to reload config, keeping previous config")?;
+        // Update server data.
+        if has_changes {
             let data = Self::serialize(&config);
-            self.config = config;
             self.server
                 .update_data(data)
-                .context("failed to register data to serve")?;
+                .context("failed to register data to serve, was the server stopped?")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
                     .context("failed to update ip tables")?;
             }
-            self.last_updated = latest_change;
         }
         self.find_offending_processes()
     }
@@ -140,129 +162,270 @@ impl KeepItFocused {
     #[cfg(feature = "ip_tables")]
     fn apply_ip_tables(&mut self) -> Result<(), anyhow::Error> {
         #[derive(Debug)]
-            enum Domain {
-                Source(String),
-                Destination(String),
-            }
-            #[derive(Debug)]
-            struct Filter {
-                uid: Uid,
-                domain: Domain,
-                rejection: RejectedInterval,
-            }
-            
+        enum Domain {
+            Source(String),
+            Destination(String),
+        }
+        #[derive(Debug)]
+        struct Filter {
+            uid: Uid,
+            domain: Domain,
+            rejection: RejectedInterval,
+        }
 
-            info!("populating web filter: {}", "start");
-            remove_ip_tables(IP_TABLES_PREFIX)?;
+        info!("populating web filter: {}", "start");
+        remove_ip_tables(IP_TABLES_PREFIX)?;
 
-            info!("populating web filter: {}", "compiling chains");
-            // Compile to individual chains.
-            let mut chains = Vec::new();
-            for (uid, instructions) in &self.config.today_per_user {
-                for (domain, rejected) in &instructions.ips {
-                    for rejection in rejected {
-                        chains.push(Filter {
-                            uid: *uid,
-                            domain: Domain::Destination(domain.clone()),
-                            rejection: rejection.clone(),
-                        });
-                        chains.push(Filter {
-                            uid: *uid,
-                            domain: Domain::Source(domain.clone()),
-                            rejection: rejection.clone(),
-                        });
-                    }
+        info!("populating web filter: {}", "compiling chains");
+        // Compile to individual chains.
+        let mut chains = Vec::new();
+        for (uid, instructions) in &self.config.today_per_user {
+            for (domain, rejected) in &instructions.ips {
+                for rejection in rejected {
+                    chains.push(Filter {
+                        uid: *uid,
+                        domain: Domain::Destination(domain.clone()),
+                        rejection: rejection.clone(),
+                    });
+                    chains.push(Filter {
+                        uid: *uid,
+                        domain: Domain::Source(domain.clone()),
+                        rejection: rejection.clone(),
+                    });
                 }
             }
+        }
 
-            for (index, filter) in chains.into_iter().enumerate() {
-                let chain_name = format!("{IP_TABLES_PREFIX}{index}");
-                info!("populating web filter: {}", "inserting chain");
-                // Create new chain.
-                let mut chain = IPTable::builder()
-                    .build()
-                    .create(&chain_name)
-                    .with_context(|| format!("failed to create table for {filter:?}"))?;
+        for (index, filter) in chains.into_iter().enumerate() {
+            let chain_name = format!("{IP_TABLES_PREFIX}{index}");
+            info!("populating web filter: {}", "inserting chain");
+            // Create new chain.
+            let mut chain = IPTable::builder()
+                .build()
+                .create(&chain_name)
+                .with_context(|| format!("failed to create table for {filter:?}"))?;
 
-                // Populate it.
+            // Populate it.
 
-                // 1. If we're not during an interval of interest, this chain doesn't apply.
-                chain
-                    .append(iptables::Filter::Time {
-                        start: Some(filter.rejection.0.start),
-                        end: Some(filter.rejection.0.end),
-                    })
-                    .with_context(|| format!("failed to create time rule for {filter:?}"))?;
+            // 1. If we're not during an interval of interest, this chain doesn't apply.
+            chain
+                .append(iptables::Filter::Time {
+                    start: Some(filter.rejection.0.start),
+                    end: Some(filter.rejection.0.end),
+                })
+                .with_context(|| format!("failed to create time rule for {filter:?}"))?;
 
-                // 2. If this is not a user we're watching, this chain doesn't apply.
-                chain
-                    .append(iptables::Filter::Owner { uid: filter.uid })
-                    .with_context(|| format!("failed to create user rule for {filter:?}"))?;
+            // 2. If this is not a user we're watching, this chain doesn't apply.
+            chain
+                .append(iptables::Filter::Owner { uid: filter.uid })
+                .with_context(|| format!("failed to create user rule for {filter:?}"))?;
 
-                // 3. If this is not a domain we're watching, this chain doesn't apply.
-                match filter.domain {
-                    Domain::Source(ref source) => {
-                        chain.append(iptables::Filter::Source { domain: source })
-                    }
-                    Domain::Destination(ref dest) => {
-                        chain.append(iptables::Filter::Destination { domain: dest })
-                    }
+            // 3. If this is not a domain we're watching, this chain doesn't apply.
+            match filter.domain {
+                Domain::Source(ref source) => {
+                    chain.append(iptables::Filter::Source { domain: source })
                 }
-                .with_context(|| format!("failed to create domain rule for {filter:?}"))?;
-
-                // ... If the chain still applies, it means that the domain is currently forbidden for the user!
-                chain
-                    .finish(iptables::Finish::Drop)
-                    .with_context(|| format!("failed to terminate rule for {filter:?}"))?;
+                Domain::Destination(ref dest) => {
+                    chain.append(iptables::Filter::Destination { domain: dest })
+                }
             }
-            info!("populating web filter: {}", "done");
+            .with_context(|| format!("failed to create domain rule for {filter:?}"))?;
+
+            // ... If the chain still applies, it means that the domain is currently forbidden for the user!
+            chain
+                .finish(iptables::Finish::Drop)
+                .with_context(|| format!("failed to terminate rule for {filter:?}"))?;
+        }
+        info!("populating web filter: {}", "done");
         Ok(())
     }
 
-    fn load_config(path: &Path) -> Result<Precompiled, anyhow::Error> {
-        info!("reading config: {}", "start");
-        let reader = std::fs::File::open(path)
-            .with_context(|| format!("could not open file {}", path.to_string_lossy()))?;
-        let config: Config = serde_yaml::from_reader(reader)
-            .with_context(|| format!("could not parse file {}", path.to_string_lossy()))?;
+    fn fetch_and_cache<F>(
+        &mut self,
+        path: PathBuf,
+        today_only: bool,
+        read: F,
+    ) -> Result<bool, anyhow::Error>
+    where
+        F: FnOnce(
+            std::fs::File,
+        )
+            -> Result<HashMap<String /* username */, config::DayConfig>, anyhow::Error>,
+    {
+        let latest_update = std::fs::metadata(&path)
+            .with_context(|| format!("could not access configuration at {}", path.display()))?
+            .modified()
+            .with_context(|| format!("no latest modification time for {}", path.display()))?;
+        if today_only && is_today(latest_update).not() {
+            // This file has been modified before today, so it's obsolete, remove from cache.
+            debug!(
+                "File {} was modified before today, removing from cache",
+                path.display()
+            );
+            self.cache.remove(&path);
+            return Ok(true);
+        }
 
-        info!("reading config: {}", "resolving");
+        let entry = self.cache.entry(path.clone()).or_default();
+        if latest_update <= entry.latest_update {
+            // No change, keep cache.
+            return Ok(false);
+        }
+        let reader = std::fs::File::open(&path)
+            .with_context(|| format!("could not open file {}", path.to_string_lossy()))?;
+        let data = read(reader)
+            .with_context(|| format!("could not read file {}", path.to_string_lossy()))?;
+        entry.config = data;
+        entry.latest_update = latest_update;
+        Ok(true)
+    }
+
+    fn load_config(&mut self) -> Result<(bool, Precompiled), anyhow::Error> {
         let today = DayOfWeek::now();
+
+        let mut has_changes = false;
+
+        // 1. Load main file.
+        info!("reading config: loading main file");
+        has_changes |= self.fetch_and_cache(self.options.main_config.clone(), false, |file| {
+            let config: Config = serde_yaml::from_reader(file).context("invalid format")?;
+            let mut result = HashMap::new();
+            for (user, mut week) in config.users {
+                if let Some(day_config) = week.0.remove(&today) {
+                    debug!("processing user {user} - we have a rule for today {:?}", day_config);
+                    result.insert(user, day_config);
+                } else {
+                    debug!("processing user {user} - no rule for today");
+                }
+            }
+            Ok(result)
+        })?;
+        debug!("reading config: loading main file, {}", if has_changes { "changed" } else { "unchanged" });
+
+        // 2. Load other files from the directory, ignoring any error
+        // (along the way, we purge from the cache files that are now old).
+        info!("reading config: loading extensions");
+        match std::fs::read_dir(&self.options.extensions_dir) {
+            Err(err) => {
+                warn!(
+                    "failed to open directory {}, skipping extensions: {}",
+                    self.options.extensions_dir.display(),
+                    err
+                );
+            }
+            Ok(dir) => {
+                for entry in dir {
+                    match entry {
+                        Err(err) => warn!(
+                            "failed to access entry in directory {}, skipping: {}",
+                            self.options.extensions_dir.display(),
+                            err
+                        ),
+                        Ok(entry) => {
+                            let path = Path::join(&self.options.extensions_dir, entry.file_name());
+                            match self.fetch_and_cache(path.clone(), true, |file| {
+                                let config: Extension = serde_yaml::from_reader(file)?;
+                                Ok(config.users)
+                            }) {
+                                Ok(changes) => has_changes |= changes,
+                                Err(err) => {
+                                    warn!("error while reading {}, skipping: {}", path.display(), err);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        debug!("reading config: loading extensions, {}", if has_changes { "changed" } else { "unchanged" });
+
+        // 3. Purge any file that hasn't been modified today (except for the main file).
+        debug!("reading config: purging old content");
+        let before = self.cache.len();
+        self.cache.retain(|path, entry| {
+            is_today(entry.latest_update) || path == &self.options.main_config
+        });
+        let after = self.cache.len();
+        if after != before {
+            // We have eliminated at least one entry.
+            has_changes = true;
+            debug!("reading config: purging old content, we have elimited at least one entry");
+        } else {
+            debug!("reading config: purging old content, no old content to purge");
+        }
+
+        // 4. Compile all these files.
+        // FIXME: Could we avoid recompiling if there are no changes?
+        info!("reading config: resolving {:?}", self.cache);
         let mut resolver = uid_resolver::Resolver::new();
-        let mut precompiled = Precompiled {
+        #[derive(Default)]
+        struct TodayPerUser {
+            processes: Vec<(Binary, /* accepted */ Vec<AcceptedInterval>)>,
+            ips: HashMap<String, /* rejected */ Vec<AcceptedInterval>>,
+            web: HashMap</* domains */ String, /* rejected */ Vec<AcceptedInterval>>,
+        }
+        let mut today_per_user: HashMap</* user */ Rc<String>, TodayPerUser> = HashMap::new();
+        // Gather all data.
+        for entry in self.cache.values() {
+            for (user, day_config) in &entry.config {
+                let user_name = Rc::new(user.clone());
+                let user_entry = today_per_user.entry(user_name.clone()).or_default();
+                for proc in &day_config.processes {
+                    let intervals = proc
+                        .permitted
+                        .iter()
+                        .cloned()
+                        .map(AcceptedInterval)
+                        .collect_vec();
+                    user_entry.processes.push((proc.binary.clone(), intervals))
+                }
+                for ip in &day_config.ip {
+                    let forbidden = ip.permitted.iter().cloned().map(AcceptedInterval);
+                    user_entry
+                        .ips
+                        .entry(ip.domain.clone())
+                        .or_default()
+                        .extend(forbidden);
+                }
+                for web in &day_config.web {
+                    let accepted = web.permitted.iter().cloned().map(AcceptedInterval);
+                    user_entry
+                        .web
+                        .entry(web.domain.clone())
+                        .or_default()
+                        .extend(accepted);
+                }
+            }
+        }
+
+        // Now resolve intervals.
+        let mut resolved = Precompiled {
             today_per_user: HashMap::new(),
         };
-        for (user, mut week) in config.users {
-            let user = Rc::new(user);
-            let uid = resolver.resolve(&user)?;
-            let Some(day_config) = week.0.remove(&today) else {
-                continue;
-            };
-            let mut this_user = UserInstructions::new(user.clone());
-            for proc in day_config.processes {
-                let intervals = proc.permitted.into_iter().map(AcceptedInterval);
-                this_user.processes.push((proc.binary, intervals.collect()))
+        for (user_name, user_entry) in today_per_user {
+            let uid = resolver
+                .resolve(&user_name)
+                .with_context(|| format!("failed to resolve user name {user_name}"))?;
+            let mut per_user = UserInstructions::new(user_name);
+            for (domain, intervals) in user_entry.ips {
+                per_user
+                    .ips
+                    .insert(domain, RejectedInterval::complement(intervals));
             }
-            for ip in day_config.ip {
-                let forbidden = types::complement_intervals(ip.permitted)
-                    .into_iter()
-                    .map(RejectedInterval)
-                    .collect_vec()
-                    .into_boxed_slice();
-                this_user.ips.push((ip.domain, forbidden));
+            for (binary, intervals) in user_entry.processes {
+                per_user
+                    .processes
+                    .push((binary, AcceptedInterval::resolve(intervals)));
             }
-            for web in day_config.web {
-                let forbidden = types::resolve_intervals(web.permitted)
-                    .into_iter()
-                    .map(AcceptedInterval)
-                    .collect_vec()
-                    .into_boxed_slice();
-                this_user.web.insert(web.domain, forbidden);
+            for (domain, intervals) in user_entry.web {
+                per_user
+                    .web
+                    .insert(domain, AcceptedInterval::resolve(intervals));
             }
-            precompiled.today_per_user.insert(uid, this_user);
+            resolved.today_per_user.insert(uid, per_user);
         }
         info!("reading config: {}", "complete");
-        Ok(precompiled)
+        Ok((has_changes, resolved))
     }
 
     pub fn background_serve(&self) {
@@ -351,19 +514,20 @@ impl KeepItFocused {
     }
 }
 
-
 #[cfg(not(feature = "ip_tables"))]
-pub fn remove_ip_tables(_: &str) -> Result<(), anyhow::Error> {
-Err(anyhow::anyhow!("this application was compiled without support for iptables"))
+pub fn remove_ip_tables() -> Result<(), anyhow::Error> {
+    Err(anyhow::anyhow!(
+        "this application was compiled without support for iptables"
+    ))
 }
 
 #[cfg(feature = "ip_tables")]
-pub fn remove_ip_tables(prefix: &str) -> Result<(), anyhow::Error> {
+pub fn remove_ip_tables() -> Result<(), anyhow::Error> {
     // We want to reset the iptables chains we use for this process.
     // The only way to do this, apparently, is to request the list and filter.
     let chains = IPTable::builder()
         .build()
-        .list(true, Some(prefix))
+        .list(true, Some(iptables::IP_TABLES_PREFIX))
         .context("failed to list existing chains")?;
 
     if chains.is_empty() {
@@ -382,4 +546,10 @@ pub fn remove_ip_tables(prefix: &str) -> Result<(), anyhow::Error> {
             .context("failed to drop iptables chain")?;
     }
     Ok(())
+}
+
+fn is_today(date: SystemTime) -> bool {
+    let latest_update_chrono = DateTime::<Local>::from(date);
+    let today = Local::now();
+    today.num_days_from_ce() == latest_update_chrono.num_days_from_ce()
 }
