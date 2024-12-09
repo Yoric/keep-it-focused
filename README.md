@@ -70,14 +70,45 @@ Don't hesitate to look at the help for more info on running only some of these s
 $ target/release/keep-it-focused help setup
 ```
 
-# Configuring
+# Using on a daily basis
 
-See resources/test.yaml for an example configuration.
+As of this writing, keep-it-focused has the following features:
 
-Use
+1. You can setup a configuration file that specifies _when_ (combination of day and time intervals) you're allowed to use some binaries/websites. Any binary/website that is not mentioned is permitted.
+    - If you attempt to open a binary that you shouldn't be opening during a given time slot, the binary will close after ~1 minute.
+    - If you're running a binary and the permitted slot is almost finished, you'll receive a warning, giving you a little time to save your game^H^H^H^H^H work, then the binary will close.
+    - If you attempt to navigate to a website you shouldn't be opening during a given time slot, the website won't load.
+    - If you're looking at a website and the permitted slot is almost finished, you'll receive a warning, giving you a little time to save your game^H^H^H^H^H work, then the tab will empty itself.
+    - Note: Website blocking features require the companion add-on.
+2. You can add temporary authorizations that are only valid until the end of the day.
+
+## Permanent configuration
+
+The file containing your permanent configuration is at `/etc/keep-it-focused.yaml`. See `resources/test.yaml` for an example.
+
+You can also use the command-line to add new authorization intervals, see e.g.
+
+```sh
+$ keep-it-focused permanently --help
+```
+
+You must be `root` (or `sudo`) to make these changes.
+
+If you make changes manually, we recommand you use
 
 ```sh
 $ cargo run -- check your_file.yaml
 ```
 
-to make sure that the file is syntactically correct before placing it in `/etc/keep-it-focused.yaml`!
+before overwriting `/etc/keep-it-focused.yaml`!
+
+## Temporary authorizations
+
+You can add any number of files that are valid only for the current day in `/tmp/keep-it-focused`.
+
+You can also use the command-line to add new temporary authorization intervals, see e.g.
+
+```sh
+$ keep-it-focused exceptionally --help
+```
+
