@@ -1,8 +1,13 @@
-use std::{path::PathBuf, thread};
+use std::{io::ErrorKind, ops::Not, path::PathBuf, thread};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use keep_it_focused::{
+    config::{Binary, DayConfig, Extension, ProcessConfig, WebFilter},
+    types::Interval, uid_resolver::Uid,
+};
 use log::{info, warn, LevelFilter};
+use procfs::sys::kernel::random::uuid;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
@@ -38,6 +43,9 @@ enum Command {
         remove: bool,
     },
 
+    /// Setup this tool for use on the system.
+    ///
+    /// You'll need to be root.
     Setup {
         /// If true, setup /etc/firefox/policies.json
         #[arg(long, default_value = "true")]
@@ -58,6 +66,39 @@ enum Command {
         /// If true, copy daemon to /usr/bin
         #[arg(long, default_value = "true")]
         copy_daemon: bool,
+
+        /// If true, create extension directory
+        #[arg(long, default_value = "true")]
+        mkdir: bool,
+    },
+
+    /// Add a temporary rule.
+    Exceptionally {
+        #[arg(long)]
+        user: String,
+
+        #[command(subcommand)]
+        rule: Rule,
+
+        /// When the authorization starts.
+        #[arg(long, value_parser=keep_it_focused::types::TimeOfDay::parse)]
+        start: keep_it_focused::types::TimeOfDay,
+
+        /// When the authorization stops.
+        #[arg(long, value_parser=keep_it_focused::types::TimeOfDay::parse)]
+        end: keep_it_focused::types::TimeOfDay,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum Rule {
+    Domain {
+        /// The domain (subdomains are included automatically).
+        domain: String,
+    },
+    Binary {
+        /// The binary (globs are permitted).
+        binary: String,
     },
 }
 
@@ -122,6 +163,10 @@ fn main() -> Result<(), anyhow::Error> {
             port,
             ip_tables,
         } => {
+            info!("preparing file for temporary rules");
+            keep_it_focused::setup::make_extension_dir(&args.extensions)
+                .context("error while creating or setting up temporary rules directory")?;
+
             info!("loop: {}", "starting");
             let mut focuser = keep_it_focused::KeepItFocused::try_new(keep_it_focused::Options {
                 ip_tables,
@@ -146,7 +191,11 @@ fn main() -> Result<(), anyhow::Error> {
             copy_daemon,
             daemon,
             start,
+            mkdir,
         } => {
+            if Uid::me().is_root().not() {
+                warn!("this command is meant to be executed as root");
+            }
             if policies {
                 info!("setting up policies");
                 keep_it_focused::setup::setup_policies()
@@ -164,7 +213,59 @@ fn main() -> Result<(), anyhow::Error> {
                 info!("setting up daemon");
                 keep_it_focused::setup::setup_daemon(start).context("failed to copy daemon")?;
             }
+            if mkdir {
+                info!("setting up directory for temporary extensions");
+                keep_it_focused::setup::make_extension_dir(&args.extensions).context("failed to create directory for temporary extensions")?;
+            }
             info!("setup complete");
+        }
+        Command::Exceptionally {
+            user,
+            rule,
+            start,
+            end,
+        } => {
+            // Note: we expect that the configuration directory has been created already.
+            // Generate config.
+            let day_config = match rule {
+                Rule::Domain { domain } => DayConfig {
+                    web: vec![WebFilter {
+                        domain,
+                        permitted: vec![Interval { start, end }],
+                    }],
+                    ..Default::default()
+                },
+                Rule::Binary { binary: path } => {
+                    let binary = Binary::try_new(&path)?;
+                    DayConfig {
+                        processes: vec![ProcessConfig {
+                            binary,
+                            permitted: vec![Interval { start, end }],
+                        }],
+                        ..Default::default()
+                    }
+                }
+            };
+            let extension = Extension {
+                users: vec![(user, day_config)].into_iter().collect(),
+            };
+            // Create temporary buffer.
+            let (path, file) = loop {
+                let name = format!("{}.yaml", uuid().unwrap());
+                let path = std::path::Path::join(&args.extensions, name);
+                match std::fs::File::create_new(&path) {
+                    Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                        // We stumbled upon an existing file, try again.
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(err).context("could not create file to write temporary rule")
+                    }
+                    Ok(file) => break (path, file),
+                };
+            };
+            info!("writing rule to {}", path.display());
+            serde_yaml::to_writer(file, &extension).context("failed to write extension to file")?;
         }
     }
     Ok(())

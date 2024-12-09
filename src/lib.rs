@@ -5,8 +5,8 @@ mod iptables;
 mod notify;
 mod serve;
 pub mod setup;
-mod types;
-mod uid_resolver;
+pub mod types;
+pub mod uid_resolver;
 
 use std::{
     collections::HashMap,
@@ -259,10 +259,13 @@ impl KeepItFocused {
         if today_only && is_today(latest_update).not() {
             // This file has been modified before today, so it's obsolete, remove from cache.
             debug!(
-                "File {} was modified before today, removing from cache",
+                "File {} was modified before today, removing from cache and disk",
                 path.display()
             );
             self.cache.remove(&path);
+            if let Err(err) = std::fs::remove_file(&path) {
+                warn!("failed to remove file {}: {err}", path.display());
+            }
             return Ok(true);
         }
 
@@ -274,7 +277,7 @@ impl KeepItFocused {
         let reader = std::fs::File::open(&path)
             .with_context(|| format!("could not open file {}", path.to_string_lossy()))?;
         let data = read(reader)
-            .with_context(|| format!("could not read file {}", path.to_string_lossy()))?;
+            .with_context(|| format!("could not parse file {}", path.to_string_lossy()))?;
         entry.config = data;
         entry.latest_update = latest_update;
         Ok(true)
@@ -292,7 +295,10 @@ impl KeepItFocused {
             let mut result = HashMap::new();
             for (user, mut week) in config.users {
                 if let Some(day_config) = week.0.remove(&today) {
-                    debug!("processing user {user} - we have a rule for today {:?}", day_config);
+                    debug!(
+                        "processing user {user} - we have a rule for today {:?}",
+                        day_config
+                    );
                     result.insert(user, day_config);
                 } else {
                     debug!("processing user {user} - no rule for today");
@@ -300,7 +306,10 @@ impl KeepItFocused {
             }
             Ok(result)
         })?;
-        debug!("reading config: loading main file, {}", if has_changes { "changed" } else { "unchanged" });
+        debug!(
+            "reading config: loading main file, {}",
+            if has_changes { "changed" } else { "unchanged" }
+        );
 
         // 2. Load other files from the directory, ignoring any error
         // (along the way, we purge from the cache files that are now old).
@@ -324,12 +333,17 @@ impl KeepItFocused {
                         Ok(entry) => {
                             let path = Path::join(&self.options.extensions_dir, entry.file_name());
                             match self.fetch_and_cache(path.clone(), true, |file| {
-                                let config: Extension = serde_yaml::from_reader(file)?;
+                                let config: Extension = serde_yaml::from_reader(file)
+                                    .context("error reading/parsing file")?;
                                 Ok(config.users)
                             }) {
                                 Ok(changes) => has_changes |= changes,
                                 Err(err) => {
-                                    warn!("error while reading {}, skipping: {}", path.display(), err);
+                                    warn!(
+                                        "error while reading {}, skipping: {}",
+                                        path.display(),
+                                        err
+                                    );
                                 }
                             }
                         }
@@ -337,7 +351,10 @@ impl KeepItFocused {
                 }
             }
         }
-        debug!("reading config: loading extensions, {}", if has_changes { "changed" } else { "unchanged" });
+        debug!(
+            "reading config: loading extensions, {}",
+            if has_changes { "changed" } else { "unchanged" }
+        );
 
         // 3. Purge any file that hasn't been modified today (except for the main file).
         debug!("reading config: purging old content");
@@ -418,9 +435,12 @@ impl KeepItFocused {
                     .push((binary, AcceptedInterval::resolve(intervals)));
             }
             for (domain, intervals) in user_entry.web {
+                debug!("domain {domain}: resolving intervals {intervals:?}");
+                let resolved = AcceptedInterval::resolve(intervals);
+                debug!("domain {domain}: resolving intervals => {resolved:?}");
                 per_user
                     .web
-                    .insert(domain, AcceptedInterval::resolve(intervals));
+                    .insert(domain, resolved);
             }
             resolved.today_per_user.insert(uid, per_user);
         }

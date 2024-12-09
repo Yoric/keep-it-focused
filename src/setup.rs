@@ -1,9 +1,7 @@
 //! Support for `keep-it-focused setup`.
 
 use std::{
-    collections::HashMap,
-    io::{ErrorKind, Write},
-    path::Path,
+    collections::HashMap, io::{ErrorKind, Write}, os::unix::fs::PermissionsExt, path::Path
 };
 
 use anyhow::Context;
@@ -116,6 +114,16 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
 
 /// Copy this binary to /usr/bin, make it world-executable.
 pub fn copy_daemon() -> Result<(), anyhow::Error> {
+    info!("if the daemon is started, let's stop it before copying");
+    let mut stop_command = std::process::Command::new("systemctl");
+    stop_command.args(["stop", "keep-it-focused"]);
+    let mut child = stop_command
+        .spawn()
+        .with_context(|| "failed to stop daemon")?;
+    if let Err(err) = child.wait() {
+        debug!("could not stop daemon: {}", err);
+    }
+
     const DEST_DIRECTORY: &str = "/usr/bin";
     let source = exe_name();
     let name = std::path::Path::new(&source).file_name()
@@ -207,5 +215,18 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
         cmd.spawn().context("error in `systemctl start`")?;
     }
 
+    Ok(())
+}
+
+pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
+    // Note: this direcotry MUST belong to root and be writeable only by root.
+    std::fs::create_dir_all(path)
+        .context("failed to create directory to store temporary rules")?;
+    let mut permissions = std::fs::metadata(path)
+        .context("failed to read metadata on temporary rules dir")?
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions)
+        .context("failed to set permissions on temporary rules dir")?;
     Ok(())
 }

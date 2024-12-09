@@ -5,6 +5,15 @@ use anyhow::Context;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u32);
+impl Uid {
+    pub fn is_root(&self) -> bool {
+        self.0 == 0
+    }
+    pub fn me() -> Uid {
+        Uid(unsafe { libc::getuid() })
+    }
+}
+
 
 pub struct Resolver {
     username_to_uid: HashMap<String, Uid>,

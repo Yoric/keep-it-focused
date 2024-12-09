@@ -2,6 +2,7 @@ use core::fmt;
 use std::{collections::HashMap, fmt::Display, ops::Not, path::PathBuf};
 
 use crate::types::{DayOfWeek, Interval};
+use anyhow::anyhow;
 use globset::{Glob, GlobMatcher};
 use log::trace;
 use serde::{
@@ -14,6 +15,16 @@ use serde::{
 pub struct Binary {
     pub path: PathBuf,
     pub matcher: GlobMatcher,
+}
+impl Binary {
+    pub fn try_new(path: &str) -> Result<Self, anyhow::Error> {
+        let glob = Glob::new(path).map_err(|_| anyhow!("invalid glob {path}"))?;
+
+        Ok(Binary {
+            path: PathBuf::from(path),
+            matcher: glob.compile_matcher(),
+        })
+    }
 }
 impl fmt::Debug for Binary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,11 +123,15 @@ enum DayConfigParser {
     },
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
 pub struct DayConfig {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if="Vec::is_empty")]
     pub processes: Vec<ProcessConfig>,
+
+    #[serde(default, skip_serializing_if="Vec::is_empty")]
     pub ip: Vec<WebFilter>,
+
+    #[serde(default, skip_serializing_if="Vec::is_empty")]
     pub web: Vec<WebFilter>,
 }
 

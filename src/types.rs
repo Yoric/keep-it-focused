@@ -1,8 +1,10 @@
-use std::{fmt::Display, time::Duration};
+use std::{fmt::Display, ops::Not, time::Duration};
 
+use anyhow::anyhow;
 use chrono::{Datelike, Timelike};
 use lazy_regex::lazy_regex;
-use log::trace;
+#[allow(unused)]
+use log::{debug, trace};
 use serde::{
     de::{Unexpected, Visitor},
     Deserialize, Serialize,
@@ -55,6 +57,35 @@ pub const DAY_ENDS: TimeOfDay = TimeOfDay {
     minutes: 0,
 };
 
+impl TimeOfDay {
+    pub fn parse(source: &str) -> Result<Self, anyhow::Error> {
+        let re = lazy_regex!("([0-2][0-9]):?([0-5][0-9])");
+        let Some(captures) = re.captures(source) else {
+            return Err(anyhow!(
+                "invalid time of day, expecting e.g. \"1135\" (11:35 am) or \"1759\" (5:59pm)"
+            ));
+        };
+        let (_, [hh, mm]) = captures.extract();
+        let Ok(hh) = hh.parse::<u64>() else {
+            return Err(anyhow!("hours should be a valid number"));
+        };
+        let Ok(mm) = mm.parse::<u64>() else {
+            return Err(anyhow!("minutes should be a valid number"));
+        };
+        match (hh, mm) {
+            (24, 00) => Ok(DAY_ENDS),
+            (0..=23, 00..=59) => Ok(TimeOfDay {
+                hours: hh as u8,
+                minutes: mm as u8,
+            }),
+            (0..=23, _) => Err(anyhow!(
+                "invalid minutes {mm}, expected a number in [0, 59]"
+            )),
+            _ => Err(anyhow!("invalid hours {hh}, expected a number in [0, 23]")),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for TimeOfDay {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -73,7 +104,7 @@ impl<'de> Deserialize<'de> for TimeOfDay {
                 if source.len() != 4 {
                     return Err(D::Error::invalid_length(source.len(), &"4"));
                 }
-                let re = lazy_regex!("([0-2][0-9])([0-5][0-9])");
+                let re = lazy_regex!("([0-2][0-9]):?([0-5][0-9])");
                 let Some(captures) = re.captures(source) else {
                     return Err(D::Error::invalid_value(
                         Unexpected::Str(source),
@@ -253,6 +284,24 @@ impl Interval {
         let time: Duration = time.into();
         Some(end - time)
     }
+    pub fn intersects(&self, other: &Self) -> bool {
+        if self.start <= other.start && self.end >= other.start {
+            return true
+        }
+        if self.start <= other.end && self.end >= other.end {
+            return true
+        }
+        false
+    }
+    pub fn merge(&self, other: &Self) -> Option<Self> {
+        if self.intersects(other).not() {
+            return None
+        }
+        Some(Interval {
+            start: TimeOfDay::min(self.start, other.start),
+            end: TimeOfDay::max(self.end, other.end),
+        })
+    }
     fn default_start() -> TimeOfDay {
         DAY_BEGINS
     }
@@ -264,15 +313,14 @@ impl Interval {
 #[derive(Debug, Clone, Serialize)]
 pub struct AcceptedInterval(pub Interval);
 impl AcceptedInterval {
-    // Simplify a bunch of accepted intervals into rejected intervals.
+    /// Simplify a bunch of accepted intervals.
     pub fn resolve(mut intervals: Vec<AcceptedInterval>) -> Vec<AcceptedInterval> {
         intervals.sort_by_key(|interval| interval.0.start);
         let mut normalized: Vec<AcceptedInterval> = vec![];
         for interval in intervals {
             if let Some(latest) = normalized.last_mut() {
-                // Merge two contiguous intervals.
-                if latest.0.end >= interval.0.start {
-                    latest.0.end = interval.0.end;
+                if let Some(merged) = latest.0.merge(&interval.0) {
+                    latest.0 = merged;
                     continue;
                 }
             }
@@ -309,11 +357,12 @@ pub struct RejectedInterval(pub Interval);
 impl RejectedInterval {
     // Simplify a bunch of accepted intervals into rejected intervals.
     pub fn complement(intervals: Vec<AcceptedInterval>) -> Vec<RejectedInterval> {
-        let normalized = AcceptedInterval::resolve(intervals);
+        let accepted = AcceptedInterval::resolve(intervals);
 
         // Obtain the intervals during which use is forbidden.
         let mut complement = Vec::new();
-        if normalized.is_empty() {
+        if accepted.is_empty() {
+            // Trivial case: nothing is permitted, so reject the entire day.
             complement.push(RejectedInterval(Interval {
                 start: TimeOfDay {
                     hours: 0,
@@ -326,8 +375,10 @@ impl RejectedInterval {
             }));
         } else {
             let mut latest_in = DAY_BEGINS;
-            for interval in normalized {
+            for interval in accepted {
                 if interval.0.start > latest_in {
+                    // Nothing is permitted between `latest_in` and `interval.0.start`,
+                    // so that's a new forbidden segment.
                     complement.push(RejectedInterval(Interval {
                         start: latest_in,
                         end: interval.0.start,

@@ -1,6 +1,6 @@
 [package]
 name = "keep-it-focused"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
 [lib]
@@ -16,6 +16,7 @@ globset = { version = "0.4.15", features = ["serde", "serde1", "simd-accel"] }
 itertools = "0.13.0"
 kill_tree = "0.2.4"
 lazy-regex = "3.3.0"
+libc = "0.2.168"
 log = "0.4.22"
 procfs = "0.17.0"
 regex = "1.11.1"
