@@ -2,7 +2,11 @@
 	"manifest_version": 2,
 	"name": "Keep It Focused",
 	"description": "A small tool to avoid visiting the wrong websites when it's time to work. CURRENTLY HIGHLY EXPERIMENTAL.",
-	"version": "0.2.0",
+	"developer": {
+		"name": "Yoric",
+		"url": "https://github.com/Yoric/"
+	},
+	"version": "0.2.1",
 	"browser_specific_settings": {
 		"gecko": {
 		  "id": "keep-it-focused@yoric.xyz",
