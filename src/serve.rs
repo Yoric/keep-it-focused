@@ -30,7 +30,7 @@ impl Server {
     }
     pub fn serve_blocking(&self) -> Result<(), anyhow::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.port))
-            .context("failed to acquire port 7878")?;
+            .with_context(|| format!("Failed to acquire port {}", self.port))?;
         for stream in listener.incoming() {
             let stream = match stream {
                 Ok(stream) => stream,
@@ -59,7 +59,7 @@ impl Server {
     fn handle_stream(&self, mut stream: TcpStream) -> Result<(), anyhow::Error> {
         let peer = stream
             .peer_addr()
-            .context("stream doesn't have an address")?;
+            .context("Stream doesn't have an address")?;
 
         // Don't answer requests from other hosts.
         if peer.ip().is_loopback().not() {
@@ -89,7 +89,7 @@ impl Server {
         };
 
         // Find the process owning this inode.
-        let processes = procfs::process::all_processes().context("could not access /proc")?;
+        let processes = procfs::process::all_processes().context("Could not access /proc")?;
         let mut owner = None;
         for process in processes {
             let Ok(process) = process else { continue };
@@ -125,9 +125,9 @@ impl Server {
         debug!("response {}", response);
         stream
             .write_all(response.as_bytes())
-            .context("failed to respond with OK")?;
+            .context("Failed to respond with OK")?;
 
         debug!("responded");
-        stream.flush().context("failed to flush")
+        stream.flush().context("Failed to flush")
     }
 }

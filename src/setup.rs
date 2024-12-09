@@ -1,7 +1,10 @@
 //! Support for `keep-it-focused setup`.
 
 use std::{
-    collections::HashMap, io::{ErrorKind, Write}, os::unix::fs::PermissionsExt, path::Path
+    collections::HashMap,
+    io::{ErrorKind, Write},
+    os::unix::fs::PermissionsExt,
+    path::Path,
 };
 
 use anyhow::Context;
@@ -80,13 +83,13 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     }
 
     std::fs::create_dir_all("/etc/firefox/addons")
-        .context("failed to create /etc/firefox/addons")?;
+        .context("Failed to create /etc/firefox/addons")?;
 
     // Load /etc/firefox/policies.json.
     debug!("reading {}", CONFIG_PATH);
     let mut config: Configuration = match std::fs::File::open(CONFIG_PATH) {
         Ok(file) => serde_json::from_reader(std::io::BufReader::new(file))
-            .context("failed to parse policies.json")?,
+            .context("Failed to parse policies.json")?,
         Err(err) if err.kind() == ErrorKind::NotFound => {
             debug!("file is empty, creating");
             Configuration::default()
@@ -205,14 +208,14 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
     info!("preparing daemon for next startup");
     let mut cmd = std::process::Command::new("systemctl");
     cmd.args(["enable", "keep-it-focused"]);
-    cmd.spawn().context("error in `systemctl enable`")?;
+    cmd.spawn().context("Error in `systemctl enable`")?;
 
     // Prepare for start.
     if auto_start {
         info!("attempting to start daemon");
         let mut cmd = std::process::Command::new("systemctl");
         cmd.args(["start", "keep-it-focused"]);
-        cmd.spawn().context("error in `systemctl start`")?;
+        cmd.spawn().context("Error in `systemctl start`")?;
     }
 
     Ok(())
@@ -220,13 +223,12 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
 
 pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
     // Note: this direcotry MUST belong to root and be writeable only by root.
-    std::fs::create_dir_all(path)
-        .context("failed to create directory to store temporary rules")?;
+    std::fs::create_dir_all(path).context("Failed to create directory to store temporary rules")?;
     let mut permissions = std::fs::metadata(path)
-        .context("failed to read metadata on temporary rules dir")?
+        .context("Failed to read metadata on temporary rules dir")?
         .permissions();
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)
-        .context("failed to set permissions on temporary rules dir")?;
+        .context("Failed to set permissions on temporary rules dir")?;
     Ok(())
 }

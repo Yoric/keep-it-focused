@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use uucore::entries::{Locate, Passwd};
+use log::debug;
+use uucore::entries::{uid2usr, Locate, Passwd};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u32);
@@ -12,8 +13,10 @@ impl Uid {
     pub fn me() -> Uid {
         Uid(unsafe { libc::getuid() })
     }
+    pub fn name(&self) -> Result<String, anyhow::Error> {
+        uid2usr(self.0).with_context(|| anyhow!("cannot find user {}", self.0))
+    }
 }
-
 
 pub struct Resolver {
     username_to_uid: HashMap<String, Uid>,
@@ -36,9 +39,10 @@ impl Resolver {
             return Ok(*uid);
         }
         let passwd = Passwd::locate(name)
-            .with_context(|| format!("could not find information for user {name}"))?;
+            .with_context(|| format!("Could not find information for user {name}"))?;
         let uid = Uid(passwd.uid);
         self.username_to_uid.insert(name.to_string(), uid);
+        debug!("resolved user {name} => {}", uid.0);
         Ok(uid)
     }
 }

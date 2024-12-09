@@ -125,17 +125,17 @@ enum DayConfigParser {
 
 #[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
 pub struct DayConfig {
-    #[serde(default, skip_serializing_if="Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub processes: Vec<ProcessConfig>,
 
-    #[serde(default, skip_serializing_if="Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ip: Vec<WebFilter>,
 
-    #[serde(default, skip_serializing_if="Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web: Vec<WebFilter>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Default, Debug)]
 pub struct Week(pub HashMap<DayOfWeek, DayConfig>);
 
 impl<'de> Deserialize<'de> for Week {
@@ -201,14 +201,14 @@ impl<'de> Deserialize<'de> for Week {
 }
 
 /// The contents of /etc/keep-it-focused.yaml, covering the entire week.
-#[derive(Deserialize, Serialize, Default)]
+#[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Config {
     #[serde(default)]
     pub users: HashMap<String /*username*/, Week>,
 }
 
 /// The contents of a patch file, valid only for one day.
-#[derive(Deserialize, Serialize, Default)]
+#[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Extension {
     pub users: HashMap<String, DayConfig>,
 }

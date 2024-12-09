@@ -242,6 +242,23 @@ impl DayOfWeek {
     pub fn sunday() -> Self {
         DayOfWeek(6)
     }
+    pub fn parse(source: &str) -> Result<Self, anyhow::Error> {
+        let day = match source[0..3].to_ascii_lowercase().as_str() {
+            "mon" | "0" => Self::monday(),
+            "tue" | "1" => Self::tuesday(),
+            "wed" | "2" => Self::wednesday(),
+            "thu" | "3" => Self::thursday(),
+            "fri" | "4" => Self::friday(),
+            "sat" | "5" => Self::saturday(),
+            "sun" | "6" => Self::sunday(),
+            _ => {
+                return Err(anyhow!(
+                    "invalid day '{source}', expected one of mon, tue, wed, thu, fri, sat, sun"
+                ))
+            }
+        };
+        Ok(day)
+    }
 }
 impl Display for DayOfWeek {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -286,16 +303,16 @@ impl Interval {
     }
     pub fn intersects(&self, other: &Self) -> bool {
         if self.start <= other.start && self.end >= other.start {
-            return true
+            return true;
         }
         if self.start <= other.end && self.end >= other.end {
-            return true
+            return true;
         }
         false
     }
     pub fn merge(&self, other: &Self) -> Option<Self> {
         if self.intersects(other).not() {
-            return None
+            return None;
         }
         Some(Interval {
             start: TimeOfDay::min(self.start, other.start),

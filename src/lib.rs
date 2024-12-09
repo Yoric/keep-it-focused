@@ -131,16 +131,16 @@ impl KeepItFocused {
         // Load any change.
         let (has_changes, config) = self
             .load_config()
-            .context("failed to reload config, keeping previous config")?;
+            .context("Failed to reload config, keeping previous config")?;
         // Update server data.
         if has_changes {
             let data = Self::serialize(&config);
             self.server
                 .update_data(data)
-                .context("failed to register data to serve, was the server stopped?")?;
+                .context("Failed to register data to serve, was the server stopped?")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
-                    .context("failed to update ip tables")?;
+                    .context("Failed to update ip tables")?;
             }
         }
         self.find_offending_processes()
@@ -291,7 +291,7 @@ impl KeepItFocused {
         // 1. Load main file.
         info!("reading config: loading main file");
         has_changes |= self.fetch_and_cache(self.options.main_config.clone(), false, |file| {
-            let config: Config = serde_yaml::from_reader(file).context("invalid format")?;
+            let config: Config = serde_yaml::from_reader(file).context("Invalid format")?;
             let mut result = HashMap::new();
             for (user, mut week) in config.users {
                 if let Some(day_config) = week.0.remove(&today) {
@@ -334,7 +334,7 @@ impl KeepItFocused {
                             let path = Path::join(&self.options.extensions_dir, entry.file_name());
                             match self.fetch_and_cache(path.clone(), true, |file| {
                                 let config: Extension = serde_yaml::from_reader(file)
-                                    .context("error reading/parsing file")?;
+                                    .context("Error reading/parsing file")?;
                                 Ok(config.users)
                             }) {
                                 Ok(changes) => has_changes |= changes,
@@ -372,7 +372,6 @@ impl KeepItFocused {
         }
 
         // 4. Compile all these files.
-        // FIXME: Could we avoid recompiling if there are no changes?
         info!("reading config: resolving {:?}", self.cache);
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
@@ -420,9 +419,10 @@ impl KeepItFocused {
             today_per_user: HashMap::new(),
         };
         for (user_name, user_entry) in today_per_user {
-            let uid = resolver
-                .resolve(&user_name)
-                .with_context(|| format!("failed to resolve user name {user_name}"))?;
+            let Ok(uid) = resolver.resolve(&user_name) else {
+                warn!("failed to resolve user name {user_name}");
+                continue
+            };
             let mut per_user = UserInstructions::new(user_name);
             for (domain, intervals) in user_entry.ips {
                 per_user
@@ -438,9 +438,7 @@ impl KeepItFocused {
                 debug!("domain {domain}: resolving intervals {intervals:?}");
                 let resolved = AcceptedInterval::resolve(intervals);
                 debug!("domain {domain}: resolving intervals => {resolved:?}");
-                per_user
-                    .web
-                    .insert(domain, resolved);
+                per_user.web.insert(domain, resolved);
             }
             resolved.today_per_user.insert(uid, per_user);
         }
@@ -461,7 +459,7 @@ impl KeepItFocused {
 
         let now = TimeOfDay::from(chrono::Local::now());
         let processes = procfs::process::all_processes()
-            .context("could not access /proc, is this a Linux machine?")?;
+            .context("Could not access /proc, is this a Linux machine?")?;
 
         for proc in processes {
             // Examine process. We may not have access to all processes, e.g. if they're zombies,
@@ -548,7 +546,7 @@ pub fn remove_ip_tables() -> Result<(), anyhow::Error> {
     let chains = IPTable::builder()
         .build()
         .list(true, Some(iptables::IP_TABLES_PREFIX))
-        .context("failed to list existing chains")?;
+        .context("Failed to list existing chains")?;
 
     if chains.is_empty() {
         debug!("remove_ip_tables: nothing to remove")
@@ -558,12 +556,12 @@ pub fn remove_ip_tables() -> Result<(), anyhow::Error> {
         IPTable::builder()
             .build()
             .flush(&chain_name)
-            .context("failed to reset iptables chain")?;
+            .context("Failed to reset iptables chain")?;
 
         IPTable::builder()
             .build()
             .delete(&chain_name)
-            .context("failed to drop iptables chain")?;
+            .context("Failed to drop iptables chain")?;
     }
     Ok(())
 }
