@@ -6,12 +6,26 @@ browser.runtime.onInstalled.addListener(async () => {
     console.log("keep-it-focused", "setup", "complete");
 });
 
-// Rather than downloading the updated list every minute or so, even when the
-// user is not in front of the computer, we expect any interaction with the user,
-// and if we haven't downloaded the updated list in a while, we trigger an update.
-browser.tabs.onUpdated.addListener(async () => {
-    console.log("keep-it-focused", "event detected, do we need to update?");
+// Every one minute, check for updates.
+browser.alarms.create(
+    "time to update", {
+        periodInMinutes: 1,
+    }
+)
+browser.alarms.onAlarm.addListener(async () => {
     await ConfigManager.update();
+});
+
+// If a user attempts to navigate to a forbidden domain, let's forbid this.
+browser.tabs.onUpdated.addListener(async (tabId, { url }) => {
+    if (InterdictionManager.anyRuleForbidding(url)) {
+        await browser.tabs.update(tabId, {
+            url: "about:blank",
+            autoDiscardable: true,
+        })
+    }
+}, {
+    properties: ["url"]
 });
 
 // The minimal delay between two updates, in ms.
@@ -37,9 +51,33 @@ let InterdictionManager = {
     _removeRuleIds: [],
 
     // The current list of rules.
-    _interdictions: new Map(),
+    //
+    // domain => Interdiction
+    _interdictionsByDomain: new Map(),
 
-    _rules: null,
+    // The latest version of the declarativeNetRequest rules understood by the browser.
+    _rules: [],
+    _rulesByDomain: new Map(),
+
+    // From a list of declarativeNetRequest rules, compute a map domain => rule. 
+    _computeRulesByDomain(rules) {
+        let rulesByDomain = new Map();
+        for (let rule of rules) {
+            if (rule.action.type != "block") {
+                continue;
+            }
+            if (!rule.condition.urlFilter) {
+                continue;
+            }
+            let re = /||(.*)/;
+            let match = re.exec(rule.condition.urlFilter);
+            if (!match) {
+                continue;
+            }
+            rulesByDomain.set(match[1], rule);
+        }
+        return rulesByDomain;
+    },
 
     // Initialize the interdiction manager.
     async init() {
@@ -51,26 +89,38 @@ let InterdictionManager = {
             }
         }
         this._rules = rules;
+        this._rulesByDomain = this._computeRulesByDomain(rules);
+    },
+
+    anyRuleForbidding(url) {
+        let hostname = new URL(url).hostname;
+        // FIXME: We can probably improve the performance of this, e.g. by pre-compiling a regex.
+        for (let [domain, rule] of this._interdictionsByDomain) {
+            if (hostname.includes(domain)) {
+                return rule;
+            }
+        }
+        return null;
     },
 
     // Add an interdiction.
     //
     // Don't forget to call `flush()`!
-    addInterdiction(domain) {
+    addInterdiction(domain, interval) {
         console.log("keep-it-focused", "InterdictionManager", "adding interdiction", domain, "to", this._rules);
-        for (let rule of this._rules) {
-            if (rule.condition.urlFilter == domain) {
-                console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, skipping");
-                return;
-            }
+        let interdiction;
+        if (interdiction = this._interdictionsByDomain.get(domain)) {
+            console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, updating interval");
+            interdiction.interval = interval;
+            return;
         }
-        for (let [existingDomain, _] of this._interdictions) {
-            if (existingDomain == domain) {
-                console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, skipping");
-                return;
-            }
+        interdiction = new Interdiction(domain, interval);
+        this._interdictionsByDomain.set(interdiction.domain, interdiction);
+        if (this._rulesByDomain.get(domain)) {
+            // This can happen e.g. when debugging an extension.
+            console.log("keep-it-focused", "InterdictionManager", "we already have a rule for this interdiction, skipping");
+            return;
         }
-        let interdiction = new Interdiction(domain);
         this._addRules.push({
             action: {
                 type: "block"
@@ -80,7 +130,6 @@ let InterdictionManager = {
             },
             id: interdiction.id,
         });
-        this._interdictions.set(interdiction.domain, interdiction);
     },
 
     // Remove an interdiction.
@@ -92,58 +141,63 @@ let InterdictionManager = {
             throw new TypeError();
         }
         this._removeRuleIds.push(interdiction.id);
-        this._interdictions.delete(interdiction.domain);
+        this._interdictionsByDomain.delete(interdiction.domain);
     },
 
     // Flush any interdiction added/removed since the latest flush.
     async flush() {
-        console.log("keep-it-focused", "InterdictionManager", "rules before flush", await browser.declarativeNetRequest.getSessionRules());
+        console.log("keep-it-focused", "InterdictionManager", "rules before flush", this._rules);
         let update = {
             addRules: this._addRules,
             removeRuleIds: this._removeRuleIds,
         };
-        console.log("keep-it-focused", "InterdictionManager", "flushing", update);
-        await browser.declarativeNetRequest.updateSessionRules(update);
-        console.log("keep-it-focused", "InterdictionManager", "rules after flush", await browser.declarativeNetRequest.getSessionRules());
+        if (update.addRules.length != 0 || update.removeRuleIds.length != 0) {
+            console.log("keep-it-focused", "InterdictionManager", "flushing", update);
+            await browser.declarativeNetRequest.updateSessionRules(update);
+            this._rules = await browser.declarativeNetRequest.getSessionRules();
+            this._rulesByDomain = this._computeRulesByDomain(this._rules);
+            console.log("keep-it-focused", "InterdictionManager", "rules after flush", "=>", this._rules);    
+        }
 
         // Now unload tabs.
-        console.log("keep-it-focused", "InterdictionManager", "looking at tabs");
-        let discard = [];
-        try {
-            let currentTabs = await browser.tabs.query({});
-            console.log("keep-it-focused", "InterdictionManager", "found tabs", currentTabs);
-            for (let oneTab of currentTabs) {
-                let tabURL = new URL(oneTab.url);
-                console.debug("keep-it-focused", "InterdictionManager", "checking tab url", tabURL.hostname);
-                // FIXME: We can probably improve the performance of this, e.g. by pre-compiling a regex.
-                for (let interdictionDomain of this._interdictions.keys()) {
-                    if (tabURL.hostname.includes(interdictionDomain)) {
-                        console.debug("keep-it-focused", "InterdictionManager", "discarding", tabURL.hostname);
-                        discard.push(oneTab.id);
-                        break;
-                    }
-                }
-            }
-            browser.tabs.discard(discard);
-        } catch (ex) {
-            console.error("keep-it-focused", "InterdictionManager", "error while discarding tabs", discard, ex);
+        let offendingTabs = await this.findOffendingTabs();
+        for (let { tab } of offendingTabs) {
+            await browser.tabs.update(tab.tabId, {
+                url: "about:blank",
+                autoDiscardable: true,
+            })
         }
 
         this._addRules.length = 0;
         this._removeRuleIds.length = 0;
     },
 
-    // The current list of interdictions. Please do not modify this.
+    // The current list of domain -> interdiction. Please do not modify this.
     interdictions() {
-        return this._interdictions
+        return this._interdictionsByDomain
+    },
+
+    // Return the list of {tab, rule} for tabs currently visiting a forbidden domain.
+    async findOffendingTabs() {
+        let found = [];
+        let currentTabs = await browser.tabs.query({});
+        for (let oneTab of currentTabs) {
+            let rule = this.anyRuleForbidding(oneTab.url);
+            if (rule) {
+                found.push({ rule, tab: oneTab })
+            }
+        }
+        return found;
     }
+
 };
 
 // A domain (or domain regex) to interdict.
 class Interdiction {
     // domain: string - the domain to which this rule applies
-    constructor(domain) {
+    constructor(domain, interval) {
         this.domain = domain;
+        this.interval = interval;
         this.id = ++InterdictionManager._counter;
     }
 }
@@ -209,10 +263,11 @@ let ConfigManager = {
 
         let permissionsInProgress = new Map();
         // Do we need to stop existing interdictions?
+        console.debug("keep-it-focused", "ConfigManager", "looking for interdictions that have stopped");
         for (let [domain, interdiction] of InterdictionManager.interdictions()) {
             console.log("keep-it-focused", "ConfigManager", "checking interdiction for", domain);
             let instructions = this._config.get(domain);
-            (function() {
+            (function () {
                 if (!instructions) {
                     // No instructions for a domain? It's permitted.
                     console.log("keep-it-focused", "ConfigManager", "interdiction for", domain, "has been removed, updating rules");
@@ -232,10 +287,11 @@ let ConfigManager = {
 
                 // Otherwise, let interdictions continue.
                 console.log("keep-it-focused", "ConfigManager", "interdiction for", domain, "continues");
-            }())
+            }());
         }
 
         // Do we need to add new interdictions?
+        console.debug("keep-it-focused", "ConfigManager", "looking for interdictions that have started");
         for (let [domain, intervals] of this._config) {
             let allowed = false;
             for (let interval of intervals) {
@@ -256,30 +312,39 @@ let ConfigManager = {
 
         // Flush interdictions.
         await InterdictionManager.flush();
-
-        // Do we need to update notifications?
         console.debug("keep-it-focused", "ConfigManager", "permissions in progress", permissionsInProgress);
+
+        // Do we need to notify?
         for (let [domain, interval] of permissionsInProgress) {
             let remaining = interval.contains(now);
-            let message;
-            let progress = 1;
-            if (remaining < ONE_MINUTE_MS) {
-                message = `Less than one minute left for ${domain}!`;
-                progress = 20;
-            } else if (remaining < TWO_MINUTES_MS) {
-                message = `Less than 2 minutes left for ${domain}!`;
-                progress = 40;
-            }  else if (remaining < THREE_MINUTES_MS) {
-                message = `Less than 3 minutes left for ${domain}!`;
-                progress = 60;
-            } else if (remaining < FOUR_MINUTES_MS) {
-                message = `Less than 4 minutes left for ${domain}!`;
-                progress = 80;
-            } else if (remaining < FIVE_MINUTES_MS) {
-                message = `Less than 5 minutes left for ${domain}!`;
-                progress = 100;
-            }
-            if (message) {
+            if (remaining < FIVE_MINUTES_MS) {
+                // A permission interval is closing, do we need to notify?
+                let tabs = await browser.tabs.query({
+                    active: true,
+                    url: `*://*.${domain}/`,
+                });
+                console.debug("keep-it-focused", "ConfigManager", "looking for activity that needs to stop", domain, tabs);
+                if (tabs.length == 0) {
+                    // No such tabs, no need to notify.
+                    continue;
+                }
+                let progress = 1;
+                if (remaining < ONE_MINUTE_MS) {
+                    message = `Less than one minute left for ${domain}!`;
+                    progress = 20;
+                } else if (remaining < TWO_MINUTES_MS) {
+                    message = `Less than 2 minutes left for ${domain}!`;
+                    progress = 40;
+                }  else if (remaining < THREE_MINUTES_MS) {
+                    message = `Less than 3 minutes left for ${domain}!`;
+                    progress = 60;
+                } else if (remaining < FOUR_MINUTES_MS) {
+                    message = `Less than 4 minutes left for ${domain}!`;
+                    progress = 80;
+                } else {
+                    message = `Less than 5 minutes left for ${domain}!`;
+                    progress = 100;
+                }
                 browser.notifications.create({
                     type: "progress",
                     title: "Keep it Focused",
