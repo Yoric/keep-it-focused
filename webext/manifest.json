@@ -6,7 +6,7 @@
 		"name": "Yoric",
 		"url": "https://github.com/Yoric/"
 	},
-	"version": "0.2.1",
+	"version": "0.2.5",
 	"browser_specific_settings": {
 		"gecko": {
 		  "id": "keep-it-focused@yoric.xyz",

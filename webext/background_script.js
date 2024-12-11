@@ -16,18 +16,6 @@ browser.alarms.onAlarm.addListener(async () => {
     await ConfigManager.update();
 });
 
-// If a user attempts to navigate to a forbidden domain, let's forbid this.
-browser.tabs.onUpdated.addListener(async (tabId, { url }) => {
-    if (InterdictionManager.anyRuleForbidding(url)) {
-        await browser.tabs.update(tabId, {
-            url: "about:blank",
-            autoDiscardable: true,
-        })
-    }
-}, {
-    properties: ["url"]
-});
-
 // The minimal delay between two updates, in ms.
 const UPDATE_DELAY_MS = 1000 * 60;
 const ONE_MINUTE_MS = 1000 * 60;
@@ -58,6 +46,9 @@ let InterdictionManager = {
     // The latest version of the declarativeNetRequest rules understood by the browser.
     _rules: [],
     _rulesByDomain: new Map(),
+
+    // A cached array of url filters, used to find whether a tab is breaking a rule.
+    _urlFilters: null,
 
     // From a list of declarativeNetRequest rules, compute a map domain => rule. 
     _computeRulesByDomain(rules) {
@@ -92,17 +83,6 @@ let InterdictionManager = {
         this._rulesByDomain = this._computeRulesByDomain(rules);
     },
 
-    anyRuleForbidding(url) {
-        let hostname = new URL(url).hostname;
-        // FIXME: We can probably improve the performance of this, e.g. by pre-compiling a regex.
-        for (let [domain, rule] of this._interdictionsByDomain) {
-            if (hostname.includes(domain)) {
-                return rule;
-            }
-        }
-        return null;
-    },
-
     // Add an interdiction.
     //
     // Don't forget to call `flush()`!
@@ -116,6 +96,7 @@ let InterdictionManager = {
         }
         interdiction = new Interdiction(domain, interval);
         this._interdictionsByDomain.set(interdiction.domain, interdiction);
+        this._urlFilters = null; // We'll need to recompute url filters.
         if (this._rulesByDomain.get(domain)) {
             // This can happen e.g. when debugging an extension.
             console.log("keep-it-focused", "InterdictionManager", "we already have a rule for this interdiction, skipping");
@@ -142,6 +123,7 @@ let InterdictionManager = {
         }
         this._removeRuleIds.push(interdiction.id);
         this._interdictionsByDomain.delete(interdiction.domain);
+        this._urlFilters = null; // We'll need to recompute url filters.
     },
 
     // Flush any interdiction added/removed since the latest flush.
@@ -160,12 +142,16 @@ let InterdictionManager = {
         }
 
         // Now unload tabs.
+        console.debug("keep-it-focused", "InterdictionManager", "time to unload tabs");
         let offendingTabs = await this.findOffendingTabs();
+        console.debug("keep-it-focused", "InterdictionManager", "time to unload tabs", offendingTabs);
         for (let { tab } of offendingTabs) {
+            console.debug("keep-it-focused", "InterdictionManager", "unloading tab", tab, "from", tab.url);
             await browser.tabs.update(tab.tabId, {
                 url: "about:blank",
                 autoDiscardable: true,
             })
+            console.debug("keep-it-focused", "InterdictionManager", "tab unloaded");
         }
 
         this._addRules.length = 0;
@@ -177,17 +163,27 @@ let InterdictionManager = {
         return this._interdictionsByDomain
     },
 
-    // Return the list of {tab, rule} for tabs currently visiting a forbidden domain.
-    async findOffendingTabs() {
-        let found = [];
-        let currentTabs = await browser.tabs.query({});
-        for (let oneTab of currentTabs) {
-            let rule = this.anyRuleForbidding(oneTab.url);
-            if (rule) {
-                found.push({ rule, tab: oneTab })
-            }
+    urlFilters() {
+        if (!this._urlFilters) {
+            this._urlFilters = [...this._interdictionsByDomain.keys()
+                .map((k) => `*://*.${k}/`)];
+            console.log("keep-it-focused", "InterdictionManager", "recomputed url filters", this._urlFilters);
         }
-        return found;
+        return this._urlFilters
+    },
+
+    // Return the list of {tab} for tabs currently visiting a forbidden domain.
+    async findOffendingTabs() {
+        console.debug("keep-it-focused", "InterdictionManager", "checking for offending tabs");
+        let currentTabs = await browser.tabs.query({
+            url: this.urlFilters()
+        });
+        if (currentTabs.length > 0) {
+            console.log("keep-it-focused", "InterdictionManager", "found offending tabs", currentTabs);
+        } else {
+            console.debug("keep-it-focused", "InterdictionManager", "no offending tabs");
+        }
+        return [...currentTabs.map((tab) => ({ tab }))];
     }
 
 };
