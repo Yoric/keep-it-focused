@@ -421,7 +421,7 @@ impl KeepItFocused {
         for (user_name, user_entry) in today_per_user {
             let Ok(uid) = resolver.resolve(&user_name) else {
                 warn!("failed to resolve user name {user_name}");
-                continue
+                continue;
             };
             let mut per_user = UserInstructions::new(user_name);
             for (domain, intervals) in user_entry.ips {

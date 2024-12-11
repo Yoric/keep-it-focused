@@ -223,7 +223,14 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
 
 pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
     // Note: this direcotry MUST belong to root and be writeable only by root.
-    std::fs::create_dir_all(path).context("Failed to create directory to store temporary rules")?;
+    match std::fs::create_dir_all(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => { /* not an error */ }
+        Err(err) => {
+            return Err(err).context("Failed to create directory to store temporary rules");
+        }
+    }
+
     let mut permissions = std::fs::metadata(path)
         .context("Failed to read metadata on temporary rules dir")?
         .permissions();

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use log::debug;
+use std::collections::HashMap;
 use uucore::entries::{uid2usr, Locate, Passwd};
 
 use anyhow::{anyhow, Context};

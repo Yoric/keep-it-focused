@@ -1,7 +1,7 @@
 use std::{io::ErrorKind, ops::Not, path::PathBuf, thread};
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use keep_it_focused::{
     config::{Binary, Config, Extension, ProcessConfig, WebFilter},
     types::{DayOfWeek, Interval},
@@ -50,27 +50,27 @@ enum Command {
     /// You'll need to be root.
     Setup {
         /// If true, setup /etc/firefox/policies.json
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         policies: bool,
 
         /// If true, setup daemon for start.
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         daemon: bool,
 
         /// If true, start daemon now (requires `daemon``).
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         start: bool,
 
         /// If true, copy addon to /etc/firefox/addons
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         copy_addon: bool,
 
         /// If true, copy daemon to /usr/bin
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         copy_daemon: bool,
 
         /// If true, create extension directory
-        #[arg(long, default_value = "true")]
+        #[arg(long, default_value = "true", action=ArgAction::Set)]
         mkdir: bool,
     },
 
@@ -251,8 +251,7 @@ fn main() -> Result<(), anyhow::Error> {
             if Uid::me().is_root().not() {
                 warn!("this command is meant to be executed as root");
             }
-            Resolver::new().resolve(&user)
-                .context("Invalid user")?;
+            Resolver::new().resolve(&user).context("Invalid user")?;
 
             // 1. Pick a temporary file.
             let temp_dir = std::env::temp_dir();
@@ -273,7 +272,7 @@ fn main() -> Result<(), anyhow::Error> {
 
             // 2. Read existing config.
             let input = std::fs::File::open(&args.main_config)
-            .context("Failed to open main configuration")?;
+                .context("Failed to open main configuration")?;
             let mut config: Config = serde_yaml::from_reader(std::io::BufReader::new(input))
                 .context("Failed to read/parse main configuration")?;
             let entry = config.users.entry(user).or_default();
@@ -285,10 +284,9 @@ fn main() -> Result<(), anyhow::Error> {
             // 2. Decreases the chances of two concurrent changes causing us to end up with a
             //    broken /etc/keep-it-focused.yaml.
             // 3. Decreases (but does not eliminate) the chances of a power outage while a change
-            //    causing a broken /etc/keep-it-focused.yaml. 
+            //    causing a broken /etc/keep-it-focused.yaml.
             for day in days {
-                let day_config = entry.0.entry(day)
-                    .or_default();
+                let day_config = entry.0.entry(day).or_default();
                 match rule {
                     Rule::Domain { ref domains } => {
                         for domain in domains {
@@ -307,7 +305,7 @@ fn main() -> Result<(), anyhow::Error> {
                             });
                         }
                     }
-                };    
+                };
             }
             debug!("preparing to write new file {:?}", config);
             serde_yaml::to_writer(std::io::BufWriter::new(file), &config)
@@ -348,8 +346,7 @@ fn main() -> Result<(), anyhow::Error> {
             // Note: we expect that the configuration directory has been created already.
             // Generate config.
             let mut extension = Extension::default();
-            let day_config = extension.users.entry(user)
-                .or_default();
+            let day_config = extension.users.entry(user).or_default();
             match rule {
                 Rule::Domain { domains } => {
                     for domain in domains {

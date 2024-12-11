@@ -10,6 +10,7 @@ test:
 
 rust:
 	cargo build --release
+	cp target/release/keep-it-focused dist/
 
 init:
 	npm install -g web-ext
