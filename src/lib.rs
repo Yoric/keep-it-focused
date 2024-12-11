@@ -33,7 +33,7 @@ use crate::{
     uid_resolver::Uid,
 };
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
     user_name: Rc<String>,
     processes: Vec<(Binary, /* accepted */ Vec<AcceptedInterval>)>,
@@ -51,7 +51,7 @@ impl UserInstructions {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Precompiled {
     today_per_user: HashMap<Uid, UserInstructions>,
 }
@@ -129,12 +129,19 @@ impl KeepItFocused {
 
     pub fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Load any change.
-        let (has_changes, config) = self
+        let has_changes = match self
             .load_config()
-            .context("Failed to reload config, keeping previous config")?;
+        {
+            Err(err) => {
+                warn!("Failed to reload config, keeping previous config: {}", err);
+                false
+            }
+            Ok(has_changes) => has_changes,
+        };
+
         // Update server data.
         if has_changes {
-            let data = Self::serialize(&config);
+            let data = Self::serialize(&self.config);
             self.server
                 .update_data(data)
                 .context("Failed to register data to serve, was the server stopped?")?;
@@ -283,7 +290,7 @@ impl KeepItFocused {
         Ok(true)
     }
 
-    fn load_config(&mut self) -> Result<(bool, Precompiled), anyhow::Error> {
+    fn load_config(&mut self) -> Result<bool, anyhow::Error> {
         let today = DayOfWeek::now();
 
         let mut has_changes = false;
@@ -443,7 +450,8 @@ impl KeepItFocused {
             resolved.today_per_user.insert(uid, per_user);
         }
         info!("reading config: {}", "complete");
-        Ok((has_changes, resolved))
+        self.config = resolved;
+        Ok(has_changes)
     }
 
     pub fn background_serve(&self) {
@@ -454,6 +462,7 @@ impl KeepItFocused {
     fn find_offending_processes(&self) -> Result<(), anyhow::Error> {
         if self.config.today_per_user.is_empty() {
             // Nothing to do for today.
+            debug!("find offending processes: no configuration for the day, skipping");
             return Ok(());
         }
 

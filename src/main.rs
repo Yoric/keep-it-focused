@@ -155,7 +155,7 @@ fn main() -> Result<(), anyhow::Error> {
             Ok("info") => LevelFilter::Info,
             Ok("trace") => LevelFilter::Trace,
             Ok("warn") => LevelFilter::Warn,
-            _ => LevelFilter::Info,
+            _ => LevelFilter::Debug,
         };
         log::set_max_level(max_level);
     } else {
