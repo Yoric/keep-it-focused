@@ -12,6 +12,7 @@ browser.alarms.create(
         periodInMinutes: 1,
     }
 )
+
 browser.alarms.onAlarm.addListener(async () => {
     await ConfigManager.update();
 });
@@ -81,6 +82,8 @@ let InterdictionManager = {
         }
         this._rules = rules;
         this._rulesByDomain = this._computeRulesByDomain(rules);
+        // Compute an inital (empty) list of url filters.
+        this.urlFilters();
     },
 
     // Add an interdiction.
@@ -147,7 +150,7 @@ let InterdictionManager = {
         console.debug("keep-it-focused", "InterdictionManager", "time to unload tabs", offendingTabs);
         for (let { tab } of offendingTabs) {
             console.debug("keep-it-focused", "InterdictionManager", "unloading tab", tab, "from", tab.url);
-            await browser.tabs.update(tab.tabId, {
+            await browser.tabs.update(tab.id, {
                 url: "about:blank",
                 autoDiscardable: true,
             })
@@ -165,11 +168,23 @@ let InterdictionManager = {
 
     urlFilters() {
         if (!this._urlFilters) {
+            browser.tabs.onUpdated.removeListener(this._tabListener);
             this._urlFilters = [...this._interdictionsByDomain.keys()
                 .map((k) => `*://*.${k}/`)];
             console.log("keep-it-focused", "InterdictionManager", "recomputed url filters", this._urlFilters);
+            browser.tabs.onUpdated.addListener(this._tabListener, {
+                urls: this._urlFilters,
+                properties: ["url"],
+            })
         }
         return this._urlFilters
+    },
+
+    _tabListener(tabId) {
+        // Block from navigating to a forbidden URL.
+        browser.tabs.update(tabId, {
+            url: "about:blank"
+        })
     },
 
     // Return the list of {tab} for tabs currently visiting a forbidden domain.
