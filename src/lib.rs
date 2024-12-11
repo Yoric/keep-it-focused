@@ -67,14 +67,14 @@ pub struct Options {
 }
 
 pub struct KeepItFocused {
-    // Runtime options.
+    /// Runtime options.
     options: Options,
 
-    // A compiled instance of the configuration, collated from all the currently valid configuraiton
-    // files.
+    /// A compiled instance of the configuration, collated from all the currently valid configuraiton
+    /// files.
     config: Precompiled,
 
-    // A minimal HTTP server running on its own thread to serve web filters to web browsers.
+    /// A minimal HTTP server running on its own thread to serve web filters to web browsers.
     server: Arc<serve::Server>,
 
     cache: HashMap<PathBuf, CacheEntry>,
@@ -82,19 +82,14 @@ pub struct KeepItFocused {
 
 #[derive(Debug)]
 struct CacheEntry {
-    // When the file was last read.
+    /// When the file was last changed and read.
     latest_update: SystemTime,
 
-    // Contents last read from that file.
+    /// Whtn the file was created
+    creation_date: SystemTime,
+
+    /// Contents last read from that file.
     config: HashMap<String /* username */, config::DayConfig>,
-}
-impl Default for CacheEntry {
-    fn default() -> Self {
-        Self {
-            latest_update: SystemTime::UNIX_EPOCH,
-            config: HashMap::new(),
-        }
-    }
 }
 
 impl KeepItFocused {
@@ -129,9 +124,7 @@ impl KeepItFocused {
 
     pub fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Load any change.
-        let has_changes = match self
-            .load_config()
-        {
+        let has_changes = match self.load_config() {
             Err(err) => {
                 warn!("Failed to reload config, keeping previous config: {}", err);
                 false
@@ -259,8 +252,9 @@ impl KeepItFocused {
         )
             -> Result<HashMap<String /* username */, config::DayConfig>, anyhow::Error>,
     {
-        let latest_update = std::fs::metadata(&path)
-            .with_context(|| format!("could not access configuration at {}", path.display()))?
+        let metadata = std::fs::metadata(&path)
+            .with_context(|| format!("could not access configuration at {}", path.display()))?;
+        let latest_update = metadata
             .modified()
             .with_context(|| format!("no latest modification time for {}", path.display()))?;
         if today_only && is_today(latest_update).not() {
@@ -276,7 +270,17 @@ impl KeepItFocused {
             return Ok(true);
         }
 
-        let entry = self.cache.entry(path.clone()).or_default();
+        let creation_date = metadata
+            .created()
+            .with_context(|| format!("no creation time for {}", path.display()))?;
+        let entry = self
+            .cache
+            .entry(path.clone())
+            .or_insert_with(|| CacheEntry {
+                latest_update,
+                creation_date,
+                config: HashMap::default(),
+            });
         if latest_update <= entry.latest_update {
             // No change, keep cache.
             return Ok(false);
@@ -319,7 +323,7 @@ impl KeepItFocused {
         );
 
         // 2. Load other files from the directory, ignoring any error
-        // (along the way, we purge from the cache files that are now old).
+        // (along the way, we purge from the cache directory files that are now old).
         info!("reading config: loading extensions");
         match std::fs::read_dir(&self.options.extensions_dir) {
             Err(err) => {
@@ -363,7 +367,7 @@ impl KeepItFocused {
             if has_changes { "changed" } else { "unchanged" }
         );
 
-        // 3. Purge any file that hasn't been modified today (except for the main file).
+        // 3. Purge from memory any file that hasn't been modified today (except for the main file).
         debug!("reading config: purging old content");
         let before = self.cache.len();
         self.cache.retain(|path, entry| {
@@ -380,6 +384,12 @@ impl KeepItFocused {
 
         // 4. Compile all these files.
         info!("reading config: resolving {:?}", self.cache);
+        self.config = Self::compile(&self.cache)
+            .context("error while compiling the configuration")?;
+        Ok(has_changes)
+    }
+
+    fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
         struct TodayPerUser {
@@ -388,8 +398,8 @@ impl KeepItFocused {
             web: HashMap</* domains */ String, /* rejected */ Vec<AcceptedInterval>>,
         }
         let mut today_per_user: HashMap</* user */ Rc<String>, TodayPerUser> = HashMap::new();
-        // Gather all data.
-        for entry in self.cache.values() {
+        let entries = cache.values().sorted_by_key(|entry| entry.creation_date);
+        for entry in entries {
             for (user, day_config) in &entry.config {
                 let user_name = Rc::new(user.clone());
                 let user_entry = today_per_user.entry(user_name.clone()).or_default();
@@ -421,7 +431,7 @@ impl KeepItFocused {
             }
         }
 
-        // Now resolve intervals.
+        // Now resolve intervals and usernames.
         let mut resolved = Precompiled {
             today_per_user: HashMap::new(),
         };
@@ -450,8 +460,7 @@ impl KeepItFocused {
             resolved.today_per_user.insert(uid, per_user);
         }
         info!("reading config: {}", "complete");
-        self.config = resolved;
-        Ok(has_changes)
+        Ok(resolved)
     }
 
     pub fn background_serve(&self) {
