@@ -392,17 +392,17 @@ impl KeepItFocused {
         let now = Local::now();
         if has_changes || self.last_computed.day() != now.day() {
             // We need to recompile today's config if there have been changes or whenever a new day starts.
-            self.config = Self::compile(&self.cache)
-                .context("error while compiling the configuration")?;
+            self.config =
+                Self::compile(&self.cache).context("error while compiling the configuration")?;
             self.last_computed = now;
         }
         Ok(has_changes)
     }
 
     /// Resolve the cache
-    /// 
+    ///
     /// - restrict to the current day of the week;
-    /// - restrict to 
+    /// - restrict to
     fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
@@ -430,15 +430,25 @@ impl KeepItFocused {
                         .cloned()
                         .map(RejectedInterval)
                         .collect_vec();
-                    user_entry.processes
+                    user_entry
+                        .processes
                         .entry(proc.binary.clone())
                         .or_default()
                         .push(IntervalsDiff { accepted, rejected });
-
                 }
                 for ip in &day_config.ip {
-                    let accepted = ip.permitted.iter().cloned().map(AcceptedInterval).collect_vec();
-                    let rejected = ip.forbidden.iter().cloned().map(RejectedInterval).collect_vec();
+                    let accepted = ip
+                        .permitted
+                        .iter()
+                        .cloned()
+                        .map(AcceptedInterval)
+                        .collect_vec();
+                    let rejected = ip
+                        .forbidden
+                        .iter()
+                        .cloned()
+                        .map(RejectedInterval)
+                        .collect_vec();
                     user_entry
                         .ips
                         .entry(ip.domain.clone())
@@ -446,8 +456,18 @@ impl KeepItFocused {
                         .push(IntervalsDiff { accepted, rejected });
                 }
                 for web in &day_config.web {
-                    let accepted = web.permitted.iter().cloned().map(AcceptedInterval).collect_vec();
-                    let rejected = web.forbidden.iter().cloned().map(RejectedInterval).collect_vec();
+                    let accepted = web
+                        .permitted
+                        .iter()
+                        .cloned()
+                        .map(AcceptedInterval)
+                        .collect_vec();
+                    let rejected = web
+                        .forbidden
+                        .iter()
+                        .cloned()
+                        .map(RejectedInterval)
+                        .collect_vec();
                     user_entry
                         .web
                         .entry(web.domain.clone())
@@ -456,7 +476,6 @@ impl KeepItFocused {
                 }
             }
         }
-
 
         // Now resolve intervals and usernames.
         let mut resolved = Precompiled {
@@ -470,15 +489,11 @@ impl KeepItFocused {
             let mut per_user = UserInstructions::new(user_name);
             for (domain, intervals) in user_entry.ips {
                 let resolved = IntervalsDiff::compute_rejected_intervals(intervals);
-                per_user
-                    .ips
-                    .insert(domain, resolved);
+                per_user.ips.insert(domain, resolved);
             }
             for (binary, intervals) in user_entry.processes {
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
-                per_user
-                    .processes
-                    .push((binary, resolved));
+                per_user.processes.push((binary, resolved));
             }
             for (domain, intervals) in user_entry.web {
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
@@ -519,10 +534,8 @@ impl KeepItFocused {
             };
             let Ok(exe) = proc.exe() else { continue };
 
-            debug!("examining process {:?}", exe);
             for (binary, intervals) in &user_config.processes {
                 if !binary.matcher.is_match(&exe) {
-                    debug!("we're not interested in this process");
                     continue;
                 }
                 info!(

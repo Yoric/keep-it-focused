@@ -15,7 +15,7 @@ use typed_builder::TypedBuilder;
 #[derive(PartialEq, Eq, Debug, Clone, Copy, TypedBuilder)]
 pub struct TimeOfDay {
     pub hours: u8,
-    #[builder(default=0)]
+    #[builder(default = 0)]
     pub minutes: u8,
 }
 
@@ -31,7 +31,7 @@ impl TimeOfDay {
         let hh = ((minutes / 60) % 23) as u8;
         Self {
             hours: hh,
-            minutes: mm
+            minutes: mm,
         }
     }
     pub fn now() -> TimeOfDay {
@@ -351,16 +351,35 @@ impl Interval {
     }
     pub fn subtract(self, other: Interval) -> IntervalSubtraction {
         match () {
-        // `self` included in `other`.
-        _ if self.start >= other.start && self.end <= other.end => IntervalSubtraction::Empty,
-        // Intervals do not overlap.
-        _ if self.start >= other.end  => IntervalSubtraction::MissLeft(self),
-        _ if self.end <= other.start => IntervalSubtraction::MissRight(self),
-        // Intervals overlap but `other` is not included in `self`
-        _ if self.start >= other.start && self.end > other.end  => IntervalSubtraction::HitLeft(Interval { start: other.end, end: self.end }),
-        _ if self.start <= other.start && self.end < other.end  => IntervalSubtraction::HitLeft(Interval { start: self.start, end: other.start }),
-        // `other` included in `self`
-        _ => IntervalSubtraction::HitCenter(Interval { start: self.start, end: other.start }, Interval { start: other.end, end: self.end })
+            // `self` included in `other`.
+            _ if self.start >= other.start && self.end <= other.end => IntervalSubtraction::Empty,
+            // Intervals do not overlap.
+            _ if self.start >= other.end => IntervalSubtraction::MissLeft(self),
+            _ if self.end <= other.start => IntervalSubtraction::MissRight(self),
+            // Intervals overlap but `other` is not included in `self`
+            _ if self.start >= other.start && self.end > other.end => {
+                IntervalSubtraction::HitLeft(Interval {
+                    start: other.end,
+                    end: self.end,
+                })
+            }
+            _ if self.start <= other.start && self.end < other.end => {
+                IntervalSubtraction::HitLeft(Interval {
+                    start: self.start,
+                    end: other.start,
+                })
+            }
+            // `other` included in `self`
+            _ => IntervalSubtraction::HitCenter(
+                Interval {
+                    start: self.start,
+                    end: other.start,
+                },
+                Interval {
+                    start: other.end,
+                    end: self.end,
+                },
+            ),
         }
     }
 }
@@ -409,14 +428,17 @@ impl AcceptedInterval {
     /// use keep_it_focused::types::*;
     /// let accepted = vec![AcceptedInterval(Interval { start: TimeOfDay::START, end: TimeOfDay::END})];
     /// let rejected = vec![RejectedInterval(Interval { start: TimeOfDay { hours: 12, minutes: 0}, end: TimeOfDay { hours: 12, minutes: 5} })];
-    /// 
+    ///
     /// let difference = AcceptedInterval::subtract(accepted, rejected);
     /// assert_eq!(difference, vec![
     ///     AcceptedInterval(Interval { start: TimeOfDay::START, end: TimeOfDay { hours: 12, minutes: 0} }),
     ///     AcceptedInterval(Interval { start: TimeOfDay { hours: 12, minutes: 5}, end: TimeOfDay::END }),
     /// ])
     /// ```
-    pub fn subtract(accepted: Vec<AcceptedInterval>, rejected: Vec<RejectedInterval>) -> Vec<AcceptedInterval> {
+    pub fn subtract(
+        accepted: Vec<AcceptedInterval>,
+        rejected: Vec<RejectedInterval>,
+    ) -> Vec<AcceptedInterval> {
         if rejected.is_empty() {
             return accepted;
         }
@@ -428,8 +450,7 @@ impl AcceptedInterval {
             // - we consume `acc`; or
             // - we consume `rej`; or
             // - `acc` grows strictly smaller.
-            let Some(rej) = rejected.peek().cloned()
-            else {
+            let Some(rej) = rejected.peek().cloned() else {
                 // We're done, copy whatever's left.
                 break;
             };
@@ -589,68 +610,202 @@ mod test {
     fn test_interval_sub() {
         let diffs = vec![
             IntervalsDiff {
-                accepted: (1..10).map(|hh| AcceptedInterval(Interval {
-                    start: TimeOfDay {
-                        hours: hh,
-                        minutes: 0
-                    },
-                    end: TimeOfDay {
-                        hours: hh,
-                        minutes: 10
-                    }
-                })).collect_vec(),                
+                accepted: (1..10)
+                    .map(|hh| {
+                        AcceptedInterval(Interval {
+                            start: TimeOfDay {
+                                hours: hh,
+                                minutes: 0,
+                            },
+                            end: TimeOfDay {
+                                hours: hh,
+                                minutes: 10,
+                            },
+                        })
+                    })
+                    .collect_vec(),
                 rejected: vec![
                     // This removes 00:00 -> 00:10 and part of 01:00 -> 01:10
                     RejectedInterval(Interval {
                         start: TimeOfDay {
                             hours: 0,
-                            minutes: 0    
+                            minutes: 0,
                         },
                         end: TimeOfDay {
                             hours: 1,
                             minutes: 9,
-                        }
+                        },
                     }),
                     // This doesn't intersect with anything
                     RejectedInterval(Interval {
                         start: TimeOfDay {
                             hours: 1,
-                            minutes: 15    
+                            minutes: 15,
                         },
                         end: TimeOfDay {
                             hours: 1,
                             minutes: 20,
-                        }
+                        },
                     }),
                     RejectedInterval(Interval {
-                        start: TimeOfDay { hours: 3, minutes: 0 },
-                        end: TimeOfDay { hours: 3, minutes: 1 },
-                    })
+                        start: TimeOfDay {
+                            hours: 3,
+                            minutes: 0,
+                        },
+                        end: TimeOfDay {
+                            hours: 3,
+                            minutes: 1,
+                        },
+                    }),
                 ],
             },
-            IntervalsDiff{
-                accepted: vec![
-                    AcceptedInterval(Interval {start: TimeOfDay { hours: 23, minutes: 0 }, end: TimeOfDay::END})
-                ],
+            IntervalsDiff {
+                accepted: vec![AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 23,
+                        minutes: 0,
+                    },
+                    end: TimeOfDay::END,
+                })],
                 rejected: vec![
-                    RejectedInterval(Interval { start: TimeOfDay { hours: 8, minutes: 59 }, end: TimeOfDay { hours: 9, minutes: 9 } }),
-                    RejectedInterval(Interval { start: TimeOfDay { hours: 7, minutes: 1 }, end: TimeOfDay { hours: 7, minutes: 11 } }),
-                    RejectedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 50 }, end: TimeOfDay { hours: 6, minutes: 11 } }),
-                    RejectedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 5 }, end: TimeOfDay { hours: 4, minutes: 7 } }),
-                ]
-            }
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 8,
+                            minutes: 59,
+                        },
+                        end: TimeOfDay {
+                            hours: 9,
+                            minutes: 9,
+                        },
+                    }),
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 7,
+                            minutes: 1,
+                        },
+                        end: TimeOfDay {
+                            hours: 7,
+                            minutes: 11,
+                        },
+                    }),
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 4,
+                            minutes: 50,
+                        },
+                        end: TimeOfDay {
+                            hours: 6,
+                            minutes: 11,
+                        },
+                    }),
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 4,
+                            minutes: 5,
+                        },
+                        end: TimeOfDay {
+                            hours: 4,
+                            minutes: 7,
+                        },
+                    }),
+                ],
+            },
         ];
         let result = IntervalsDiff::compute_accepted_intervals(diffs);
-        assert_eq!(result, vec![
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 1, minutes: 9 }, end: TimeOfDay { hours: 1, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 2, minutes: 0 }, end: TimeOfDay { hours: 2, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 3, minutes: 1 }, end: TimeOfDay { hours: 3, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 0 }, end: TimeOfDay { hours: 4, minutes: 5 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 7 }, end: TimeOfDay { hours: 4, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 7, minutes: 0 }, end: TimeOfDay { hours: 7, minutes: 1 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 8, minutes: 0 }, end: TimeOfDay { hours: 8, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 9, minutes: 9 }, end: TimeOfDay { hours: 9, minutes: 10 } }),
-            AcceptedInterval(Interval { start: TimeOfDay { hours: 23, minutes: 0 }, end: TimeOfDay { hours: 24, minutes: 0 } }),
-        ])
+        assert_eq!(
+            result,
+            vec![
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 1,
+                        minutes: 9
+                    },
+                    end: TimeOfDay {
+                        hours: 1,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 2,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: 2,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 3,
+                        minutes: 1
+                    },
+                    end: TimeOfDay {
+                        hours: 3,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 4,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: 4,
+                        minutes: 5
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 4,
+                        minutes: 7
+                    },
+                    end: TimeOfDay {
+                        hours: 4,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 7,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: 7,
+                        minutes: 1
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 8,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: 8,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 9,
+                        minutes: 9
+                    },
+                    end: TimeOfDay {
+                        hours: 9,
+                        minutes: 10
+                    }
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 23,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: 24,
+                        minutes: 0
+                    }
+                }),
+            ]
+        )
     }
 }

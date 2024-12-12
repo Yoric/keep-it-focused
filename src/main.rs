@@ -1,4 +1,9 @@
-use std::{io::ErrorKind, ops::{Deref, Not}, path::PathBuf, thread};
+use std::{
+    io::ErrorKind,
+    ops::{Deref, Not},
+    path::PathBuf,
+    thread,
+};
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
@@ -13,7 +18,7 @@ use procfs::sys::kernel::random::uuid;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
-const DEFAULT_EXTENSIONS_PATH: &str = "/tmp/keep-it-focused/";
+const DEFAULT_EXTENSIONS_PATH: &str = "/tmp/keep-it-focused.d/";
 const DEFAULT_PORT: &str = "7878";
 
 #[derive(Subcommand, Debug)]
@@ -91,38 +96,47 @@ enum Command {
 enum Kind {
     Domain {
         /// The domain, e.g. "youtube.com" (subdomains are included automatically).
-        #[arg(required=true)]
+        #[arg(required = true)]
         domains: Vec<String>,
     },
     Binary {
         /// The binary, e.g. "**/tetris" (globs are permitted).
-        #[arg(required=true)]
+        #[arg(required = true)]
         binaries: Vec<String>,
     },
 }
 
 #[derive(Subcommand, Debug, Clone)]
-enum Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+enum Verb<I>
+where
+    I: clap::Args + std::fmt::Debug + Clone,
+{
     /// Allow an interval of time.
     Allow(I),
 
     /// Forbid an interval of time.
     Forbid(I),
 }
-impl<I> AsRef<I> for Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+impl<I> AsRef<I> for Verb<I>
+where
+    I: clap::Args + std::fmt::Debug + Clone,
+{
     fn as_ref(&self) -> &I {
         match *self {
             Self::Allow(ref i) => i,
-            Self::Forbid(ref i) => i
+            Self::Forbid(ref i) => i,
         }
     }
 }
-impl<I> Deref for Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+impl<I> Deref for Verb<I>
+where
+    I: clap::Args + std::fmt::Debug + Clone,
+{
     type Target = I;
     fn deref(&self) -> &I {
         match *self {
             Self::Allow(ref i) => i,
-            Self::Forbid(ref i) => i
+            Self::Forbid(ref i) => i,
         }
     }
 }
@@ -282,9 +296,7 @@ fn main() -> Result<(), anyhow::Error> {
             }
             info!("setup complete");
         }
-        Command::Permanently {
-            verb,
-        } => {
+        Command::Permanently { verb } => {
             if Uid::me().is_root().not() {
                 warn!("this command is meant to be executed as root");
             }
@@ -323,10 +335,13 @@ fn main() -> Result<(), anyhow::Error> {
             //    broken /etc/keep-it-focused.yaml.
             // 3. Decreases (but does not eliminate) the chances of a power outage while a change
             //    causing a broken /etc/keep-it-focused.yaml.
-            let intervals = vec![Interval { start: verb.as_ref().start, end: verb.as_ref().end }];
+            let intervals = vec![Interval {
+                start: verb.as_ref().start,
+                end: verb.as_ref().end,
+            }];
             let (permitted, forbidden) = match verb {
                 Verb::Allow(_) => (intervals, vec![]),
-                Verb::Forbid(_) => (vec![], intervals)
+                Verb::Forbid(_) => (vec![], intervals),
             };
             match verb.as_ref().kind {
                 Kind::Domain { ref domains } => {
@@ -338,7 +353,7 @@ fn main() -> Result<(), anyhow::Error> {
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),
                             });
-                        }    
+                        }
                     }
                 }
                 Kind::Binary { ref binaries } => {
@@ -377,9 +392,7 @@ fn main() -> Result<(), anyhow::Error> {
             info!("committing change");
             std::fs::rename(temp_file, args.main_config).context("Failed to commit changes")?;
         }
-        Command::Exceptionally {
-            verb,
-        } => {
+        Command::Exceptionally { verb } => {
             if Uid::me().is_root().not() {
                 warn!("this command is meant to be executed as root");
             }
@@ -388,10 +401,13 @@ fn main() -> Result<(), anyhow::Error> {
             // Generate config.
             let mut extension = Extension::default();
             let day_config = extension.users.entry(verb.user.clone()).or_default();
-            let intervals = vec![Interval { start: verb.start, end: verb.end }];
+            let intervals = vec![Interval {
+                start: verb.start,
+                end: verb.end,
+            }];
             let (permitted, forbidden) = match verb {
                 Verb::Allow(_) => (intervals, vec![]),
-                Verb::Forbid(_) => (vec![], intervals)
+                Verb::Forbid(_) => (vec![], intervals),
             };
             debug!("exceptionally {:?}, {:?}", permitted, forbidden);
             match &verb.kind {
@@ -404,7 +420,7 @@ fn main() -> Result<(), anyhow::Error> {
                         });
                     }
                 }
-                Kind::Binary { binaries} => {
+                Kind::Binary { binaries } => {
                     for path in binaries {
                         let binary = Binary::try_new(path.as_ref())?;
                         day_config.processes.push(ProcessFilter {

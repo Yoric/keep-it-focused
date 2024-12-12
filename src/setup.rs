@@ -29,15 +29,29 @@ pub fn copy_addon() -> Result<(), anyhow::Error> {
 
     // Create directory.
     std::fs::create_dir_all(ADDONS_PATH)
-        .with_context(|| format!("failed to create {ADDONS_PATH}"))?;
+        .with_context(|| format!("Failed to create {ADDONS_PATH}"))?;
 
     // Copy xpi.
-    let source = Path::new(ADDON_SOURCE_SUBDIRECTORY).join(ADDON_FILE_NAME);
     let dest = Path::new(ADDONS_PATH).join(ADDON_FILE_NAME);
-    debug!("copying {} to {}", source.display(), dest.display());
-    std::fs::copy(&source, &dest)
-        .with_context(|| format!("failed to copy {} to {}", source.display(), dest.display()))?;
-    Ok(())
+    for dir in [ADDON_SOURCE_SUBDIRECTORY, "."] {
+        let source = Path::new(dir).join(ADDON_FILE_NAME);
+        if std::fs::metadata(&source).is_ok() {
+            debug!("copying {} to {}", source.display(), dest.display());
+            std::fs::copy(&source, &dest).with_context(|| {
+                format!("Failed to copy {} to {}", source.display(), dest.display())
+            })?;
+            return Ok(());
+        }
+    }
+
+    Err(std::io::Error::new(
+        ErrorKind::NotFound,
+        format!(
+            "Could not find {} in directories {} or {}",
+            ADDON_FILE_NAME, ADDON_SOURCE_SUBDIRECTORY, "."
+        ),
+    ))
+    .context("Addon not found")
 }
 
 /// Setup /etc/firefox/policies.json to ensure that this addon
@@ -242,7 +256,7 @@ pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
     std::fs::set_permissions(path, permissions)
         .context("Failed to set permissions on temporary rules dir")?;
 
-        if !trusted {
+    if !trusted {
         // The directory was already created, it belongs to us, but it may have been created by someone else.
         const ROOT_UID: u32 = 0;
         const ROOT_GID: u32 = 0;
