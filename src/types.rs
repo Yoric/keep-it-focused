@@ -112,7 +112,6 @@ impl<'de> Deserialize<'de> for TimeOfDay {
         D: serde::Deserializer<'de>,
     {
         use serde::de::Error;
-        trace!("TimeOfDayParser");
         // untagged enum parsers are really bad for error messages, so we use an intermediate
         // yaml parser
         let value = serde_yaml::Value::deserialize(deserializer)?;
@@ -120,7 +119,6 @@ impl<'de> Deserialize<'de> for TimeOfDay {
         let (h, m) = match (maybe_str, maybe_u64) {
             (_, Some(num)) => (num / 100, num % 100),
             (Some(source), _) => {
-                trace!("TimeOfDayParser str {source}");
                 if source.len() != 4 {
                     return Err(D::Error::invalid_length(source.len(), &"4"));
                 }
@@ -170,7 +168,6 @@ impl<'de> Deserialize<'de> for TimeOfDay {
             }
             _ => {}
         }
-        trace!("TimeOfDayParser - success");
         Ok(TimeOfDay {
             hours: h as u8,
             minutes: m as u8,
@@ -198,7 +195,6 @@ impl<'de> Deserialize<'de> for DayOfWeek {
 
             fn visit_str<E: serde::de::Error>(self, source: &str) -> Result<Self::Value, E> {
                 let prefix = &source.to_ascii_lowercase()[0..3];
-                trace!("DayOfWeek - attempting to deserialize string {prefix}");
                 let result = match prefix {
                     "0" | "mon" => Ok(DayOfWeek(0)),
                     "1" | "tue" => Ok(DayOfWeek(1)),
