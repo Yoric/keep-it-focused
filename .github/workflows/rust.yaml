@@ -1,0 +1,26 @@
+name: Build Daemon
+
+permissions: {}
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  # Disable incremental compilation for faster from-scratch builds
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: cargo build --release
+  test:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - run: cargo test --all
