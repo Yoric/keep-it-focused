@@ -7,7 +7,7 @@
 		"url": "https://github.com/Yoric/"
 	},
 	"homepage_url": "https://github.com/Yoric/keep-it-focused",
-	"version": "0.2.7",
+	"version": "0.2.8",
 	"browser_specific_settings": {
 		"gecko": {
 		  "id": "keep-it-focused@yoric.xyz",
@@ -28,5 +28,6 @@
 		"tabs",
 		"alarms",
 		"idle"
-	]
+	],
+	"incognito": "spanning"
 }
