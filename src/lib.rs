@@ -24,7 +24,7 @@ use itertools::Itertools;
 use log::{debug, info, warn};
 use serde::Serialize;
 use typed_builder::TypedBuilder;
-use types::{AcceptedInterval, RejectedInterval};
+use types::{AcceptedInterval, IntervalsDiff, RejectedInterval};
 
 use crate::{
     config::{Binary, Config},
@@ -77,7 +77,11 @@ pub struct KeepItFocused {
     /// A minimal HTTP server running on its own thread to serve web filters to web browsers.
     server: Arc<serve::Server>,
 
+    /// A cache from configuration files -> entries.
     cache: HashMap<PathBuf, CacheEntry>,
+
+    /// When `config` was last computed.
+    last_computed: DateTime<Local>,
 }
 
 #[derive(Debug)]
@@ -103,6 +107,7 @@ impl KeepItFocused {
             server, // Data will be filled once we have executed `load_config()`.
             cache: HashMap::new(), // Data will be filled once we have executed `load_config()`.
             config: Precompiled::default(), // Data will be filled once we have executed `load_config()`.
+            last_computed: DateTime::from_timestamp_micros(0).unwrap().into(), // Expect that we're running *after* the epoch.
         };
         me.tick()?;
         Ok(me)
@@ -384,18 +389,27 @@ impl KeepItFocused {
 
         // 4. Compile all these files.
         info!("reading config: resolving {:?}", self.cache);
-        self.config = Self::compile(&self.cache)
-            .context("error while compiling the configuration")?;
+        let now = Local::now();
+        if has_changes || self.last_computed.day() != now.day() {
+            // We need to recompile today's config if there have been changes or whenever a new day starts.
+            self.config = Self::compile(&self.cache)
+                .context("error while compiling the configuration")?;
+            self.last_computed = now;
+        }
         Ok(has_changes)
     }
 
+    /// Resolve the cache
+    /// 
+    /// - restrict to the current day of the week;
+    /// - restrict to 
     fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
         struct TodayPerUser {
-            processes: Vec<(Binary, /* accepted */ Vec<AcceptedInterval>)>,
-            ips: HashMap<String, /* rejected */ Vec<AcceptedInterval>>,
-            web: HashMap</* domains */ String, /* rejected */ Vec<AcceptedInterval>>,
+            processes: HashMap<Binary, Vec<IntervalsDiff>>,
+            ips: HashMap<String, Vec<IntervalsDiff>>,
+            web: HashMap</* domains */ String, Vec<IntervalsDiff>>,
         }
         let mut today_per_user: HashMap</* user */ Rc<String>, TodayPerUser> = HashMap::new();
         let entries = cache.values().sorted_by_key(|entry| entry.creation_date);
@@ -404,32 +418,45 @@ impl KeepItFocused {
                 let user_name = Rc::new(user.clone());
                 let user_entry = today_per_user.entry(user_name.clone()).or_default();
                 for proc in &day_config.processes {
-                    let intervals = proc
+                    let accepted = proc
                         .permitted
                         .iter()
                         .cloned()
                         .map(AcceptedInterval)
                         .collect_vec();
-                    user_entry.processes.push((proc.binary.clone(), intervals))
+                    let rejected = proc
+                        .forbidden
+                        .iter()
+                        .cloned()
+                        .map(RejectedInterval)
+                        .collect_vec();
+                    user_entry.processes
+                        .entry(proc.binary.clone())
+                        .or_default()
+                        .push(IntervalsDiff { accepted, rejected });
+
                 }
                 for ip in &day_config.ip {
-                    let forbidden = ip.permitted.iter().cloned().map(AcceptedInterval);
+                    let accepted = ip.permitted.iter().cloned().map(AcceptedInterval).collect_vec();
+                    let rejected = ip.forbidden.iter().cloned().map(RejectedInterval).collect_vec();
                     user_entry
                         .ips
                         .entry(ip.domain.clone())
                         .or_default()
-                        .extend(forbidden);
+                        .push(IntervalsDiff { accepted, rejected });
                 }
                 for web in &day_config.web {
-                    let accepted = web.permitted.iter().cloned().map(AcceptedInterval);
+                    let accepted = web.permitted.iter().cloned().map(AcceptedInterval).collect_vec();
+                    let rejected = web.forbidden.iter().cloned().map(RejectedInterval).collect_vec();
                     user_entry
                         .web
                         .entry(web.domain.clone())
                         .or_default()
-                        .extend(accepted);
+                        .push(IntervalsDiff { accepted, rejected });
                 }
             }
         }
+
 
         // Now resolve intervals and usernames.
         let mut resolved = Precompiled {
@@ -442,18 +469,19 @@ impl KeepItFocused {
             };
             let mut per_user = UserInstructions::new(user_name);
             for (domain, intervals) in user_entry.ips {
+                let resolved = IntervalsDiff::compute_rejected_intervals(intervals);
                 per_user
                     .ips
-                    .insert(domain, RejectedInterval::complement(intervals));
+                    .insert(domain, resolved);
             }
             for (binary, intervals) in user_entry.processes {
+                let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
                 per_user
                     .processes
-                    .push((binary, AcceptedInterval::resolve(intervals)));
+                    .push((binary, resolved));
             }
             for (domain, intervals) in user_entry.web {
-                debug!("domain {domain}: resolving intervals {intervals:?}");
-                let resolved = AcceptedInterval::resolve(intervals);
+                let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
                 debug!("domain {domain}: resolving intervals => {resolved:?}");
                 per_user.web.insert(domain, resolved);
             }

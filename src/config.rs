@@ -1,5 +1,5 @@
 use core::fmt;
-use std::{collections::HashMap, fmt::Display, ops::Not, path::PathBuf};
+use std::{collections::HashMap, fmt::Display, hash::Hash, ops::Not, path::PathBuf};
 
 use crate::types::{DayOfWeek, Interval};
 use anyhow::anyhow;
@@ -29,6 +29,11 @@ impl Binary {
 impl fmt::Debug for Binary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.path.fmt(f)
+    }
+}
+impl Hash for Binary {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path.hash(state)
     }
 }
 impl PartialEq for Binary {
@@ -84,16 +89,42 @@ impl Display for Binary {
 }
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
-pub struct ProcessConfig {
+pub struct ProcessFilter {
     /// The full path to the binary being watched.
     pub binary: Binary,
+
+    /// Intervals during which the binary is permitted.
+    ///
+    /// If empty, the binary is never permitted.
+    #[serde(default)]
     pub permitted: Vec<Interval>,
+
+    /// Intervals during which the binary is forbidden.
+    ///
+    /// This are subtracted from `permitted`. If empty,
+    /// the binary is permitted exactly during the
+    /// intervals specified by `permitted`.
+    #[serde(default)]
+    pub forbidden: Vec<Interval>,
 }
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct WebFilter {
     pub domain: String,
+
+    /// Intervals during which the domain is permitted.
+    ///
+    /// If empty, the domain is never permitted.
+    #[serde(default)]
     pub permitted: Vec<Interval>,
+
+    /// Intervals during which the domain is forbidden.
+    ///
+    /// This are subtracted from `permitted`. If empty,
+    /// the domain is permitted exactly during the
+    /// intervals specified by `permitted`.
+    #[serde(default)]
+    pub forbidden: Vec<Interval>,
 }
 
 #[derive(Deserialize)]
@@ -106,7 +137,7 @@ enum DayConfigParser {
     Instructions {
         /// Block certain processes during given time periods.
         #[serde(default)]
-        processes: Vec<ProcessConfig>,
+        processes: Vec<ProcessFilter>,
 
         /// Block certain IPs during given time periods.
         ///
@@ -126,7 +157,7 @@ enum DayConfigParser {
 #[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
 pub struct DayConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub processes: Vec<ProcessConfig>,
+    pub processes: Vec<ProcessFilter>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ip: Vec<WebFilter>,

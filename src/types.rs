@@ -1,7 +1,7 @@
 use std::{fmt::Display, ops::Not, time::Duration};
 
 use anyhow::anyhow;
-use chrono::{Datelike, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use lazy_regex::lazy_regex;
 #[allow(unused)]
 use log::{debug, trace};
@@ -9,17 +9,37 @@ use serde::{
     de::{Unexpected, Visitor},
     Deserialize, Serialize,
 };
+use typed_builder::TypedBuilder;
 
 /// A time of day.
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, TypedBuilder)]
 pub struct TimeOfDay {
     pub hours: u8,
+    #[builder(default=0)]
     pub minutes: u8,
 }
+
 impl TimeOfDay {
     pub fn as_iptables_arg(&self) -> String {
         format!("{:02}:{:02}", self.hours, self.minutes)
     }
+    pub fn as_minutes(&self) -> u16 {
+        self.minutes as u16 + self.hours as u16 * 60
+    }
+    pub fn from_minutes(minutes: u16) -> Self {
+        let mm = (minutes % 60) as u8;
+        let hh = ((minutes / 60) % 23) as u8;
+        Self {
+            hours: hh,
+            minutes: mm
+        }
+    }
+    pub fn now() -> TimeOfDay {
+        let now = Local::now();
+        now.into()
+    }
+    pub const START: TimeOfDay = DAY_BEGINS;
+    pub const END: TimeOfDay = DAY_ENDS;
 }
 
 impl From<TimeOfDay> for std::time::Duration {
@@ -301,6 +321,10 @@ impl Interval {
         let time: Duration = time.into();
         Some(end - time)
     }
+    /// Return the length of an interval, in minutes.
+    pub fn len(&self) -> u16 {
+        self.end.as_minutes() - self.start.as_minutes()
+    }
     pub fn intersects(&self, other: &Self) -> bool {
         if self.start <= other.start && self.end >= other.start {
             return true;
@@ -319,19 +343,57 @@ impl Interval {
             end: TimeOfDay::max(self.end, other.end),
         })
     }
+    pub fn is_empty(&self) -> bool {
+        assert!(self.start <= self.end);
+        self.start < self.end
+    }
     fn default_start() -> TimeOfDay {
         DAY_BEGINS
     }
     fn default_end() -> TimeOfDay {
         DAY_ENDS
     }
+    pub fn subtract(self, other: Interval) -> IntervalSubtraction {
+        match () {
+        // `self` included in `other`.
+        _ if self.start >= other.start && self.end <= other.end => IntervalSubtraction::Empty,
+        // Intervals do not overlap.
+        _ if self.start >= other.end  => IntervalSubtraction::MissLeft(self),
+        _ if self.end <= other.start => IntervalSubtraction::MissRight(self),
+        // Intervals overlap but `other` is not included in `self`
+        _ if self.start >= other.start && self.end > other.end  => IntervalSubtraction::HitLeft(Interval { start: other.end, end: self.end }),
+        _ if self.start <= other.start && self.end < other.end  => IntervalSubtraction::HitLeft(Interval { start: self.start, end: other.start }),
+        // `other` included in `self`
+        _ => IntervalSubtraction::HitCenter(Interval { start: self.start, end: other.start }, Interval { start: other.end, end: self.end })
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// The result of computing A - B on intervals
+pub enum IntervalSubtraction {
+    /// No overlap, B.start < B.end <= A.start.
+    MissLeft(Interval),
+
+    /// Overlap, B.start <= A.start < B.end < A.end.
+    HitLeft(Interval),
+
+    HitCenter(Interval, Interval),
+
+    /// Overlap, A.start <= B.start < A.end < B.end.
+    HitRight(Interval),
+
+    /// No overlap, B strictly after A
+    MissRight(Interval),
+
+    /// A included in B.
+    Empty,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AcceptedInterval(pub Interval);
 impl AcceptedInterval {
     /// Simplify a bunch of accepted intervals.
-    pub fn resolve(mut intervals: Vec<AcceptedInterval>) -> Vec<AcceptedInterval> {
+    pub fn simplify(mut intervals: Vec<AcceptedInterval>) -> Vec<AcceptedInterval> {
         intervals.sort_by_key(|interval| interval.0.start);
         let mut normalized: Vec<AcceptedInterval> = vec![];
         for interval in intervals {
@@ -346,35 +408,143 @@ impl AcceptedInterval {
         }
         normalized
     }
+
+    /// ```
+    /// use keep_it_focused::types::*;
+    /// let accepted = vec![AcceptedInterval(Interval { start: TimeOfDay::START, end: TimeOfDay::END})];
+    /// let rejected = vec![RejectedInterval(Interval { start: TimeOfDay { hours: 12, minutes: 0}, end: TimeOfDay { hours: 12, minutes: 5} })];
+    /// 
+    /// let difference = AcceptedInterval::subtract(accepted, rejected);
+    /// assert_eq!(difference, vec![
+    ///     AcceptedInterval(Interval { start: TimeOfDay::START, end: TimeOfDay { hours: 12, minutes: 0} }),
+    ///     AcceptedInterval(Interval { start: TimeOfDay { hours: 12, minutes: 5}, end: TimeOfDay::END }),
+    /// ])
+    /// ```
+    pub fn subtract(accepted: Vec<AcceptedInterval>, rejected: Vec<RejectedInterval>) -> Vec<AcceptedInterval> {
+        if rejected.is_empty() {
+            return accepted;
+        }
+        let mut accepted = Self::simplify(accepted).into_iter().peekable();
+        let mut rejected = RejectedInterval::simplify(rejected).into_iter().peekable();
+        let mut committed = vec![];
+        while let Some(acc) = accepted.peek_mut() {
+            // Loop invariant: at each step, either
+            // - we consume `acc`; or
+            // - we consume `rej`; or
+            // - `acc` grows strictly smaller.
+            let Some(rej) = rejected.peek().cloned()
+            else {
+                // We're done, copy whatever's left.
+                break;
+            };
+            match acc.clone().0.subtract(rej.0) {
+                IntervalSubtraction::Empty => {
+                    // `acc` was fully consumed, but `rej` may have intersections with further accepted intervals,
+                    accepted.next().unwrap();
+                }
+                IntervalSubtraction::MissLeft(_) => {
+                    // Since `accepted` is sorted, `rejected` won't intersect with any further accepted interval.
+                    rejected.next().unwrap();
+                    // However, `acc` may still intersect with further rejected intervals.
+                }
+                IntervalSubtraction::HitLeft(difference) => {
+                    // Since `accepted` is sorted, `rejected` won't intersect with any further accepted interval.
+                    rejected.next().unwrap();
+                    // However, `difference` may still intersect with further rejected intervals.
+                    *acc = AcceptedInterval(difference);
+                }
+                IntervalSubtraction::HitCenter(left, right) => {
+                    // Since `accepted` has no intersection between its intervals, `rejected` won't intersect with
+                    // any further accepted interval.
+                    rejected.next().unwrap();
+                    // Since `rejected` is sorted, any further rejected interval will not intersect with `left`.
+                    committed.push(AcceptedInterval(left));
+                    *acc = AcceptedInterval(right);
+                }
+                IntervalSubtraction::HitRight(difference) => {
+                    // We may still have intersections between `difference` and any further rejected interval.
+                    // However, `difference` is strictly smaller than `acc`.
+                    assert!(difference.len() < acc.0.len());
+                    *acc = AcceptedInterval(difference);
+                }
+                IntervalSubtraction::MissRight(unchanged) => {
+                    // Since `rejected` is sorted, `acc` won't intersect with any further rejected interval.
+                    accepted.next().unwrap();
+                    committed.push(AcceptedInterval(unchanged));
+                }
+            }
+        }
+        // Copy everything else
+        committed.extend(accepted);
+        committed
+    }
+}
+
+/// A difference between two unions of intervals.
+#[derive(Default)]
+pub struct IntervalsDiff {
+    pub accepted: Vec<AcceptedInterval>,
+    pub rejected: Vec<RejectedInterval>,
+}
+impl IntervalsDiff {
+    pub fn compute_accepted_intervals(from: Vec<IntervalsDiff>) -> Vec<AcceptedInterval> {
+        // Successively add `accepted`, reject `rejected`.
+        let mut accepted = vec![];
+        for diff in from {
+            accepted.extend(diff.accepted);
+            accepted = AcceptedInterval::subtract(accepted, diff.rejected);
+        }
+        accepted
+    }
+    pub fn compute_rejected_intervals(from: Vec<IntervalsDiff>) -> Vec<RejectedInterval> {
+        RejectedInterval::complement(Self::compute_accepted_intervals(from))
+    }
 }
 
 /// From a list of intervals within a day, return the list of complementary intervals,
 ///
 /// ```
 /// use keep_it_focused::types::*;
-/// let complement = complement_intervals(vec![
-///   Interval { // This interval represents 12:15-13:37
+/// let complement = RejectedInterval::complement(vec![
+///   AcceptedInterval(Interval { // This interval represents 12:15-13:37
 ///     start: TimeOfDay { hours: 12, minutes: 15 },
 ///     end: TimeOfDay  { hours: 13, minutes: 37 },
-///   }
+///   })
 /// ]);
 /// assert_eq!(complement, vec![
-///    Interval { // 00:00-12:15
+///    RejectedInterval(Interval { // 00:00-12:15
 ///       start: TimeOfDay { hours: 0, minutes: 0 },
 ///       end: TimeOfDay { hours: 12, minutes: 15 },
-///    },
-///    Interval { // 13:37-24:00
+///    }),
+///    RejectedInterval(Interval { // 13:37-24:00
 ///       start: TimeOfDay { hours: 13, minutes: 37 },
 ///       end: TimeOfDay { hours: 24, minutes: 00 },
-///    }
+///    })
 /// ]);
 /// ```
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RejectedInterval(pub Interval);
 impl RejectedInterval {
-    // Simplify a bunch of accepted intervals into rejected intervals.
+    /// Simplify a bunch of accepted intervals.
+    pub fn simplify(mut intervals: Vec<RejectedInterval>) -> Vec<RejectedInterval> {
+        intervals.sort_by_key(|interval| interval.0.start);
+        let mut normalized: Vec<RejectedInterval> = vec![];
+        for interval in intervals {
+            if let Some(latest) = normalized.last_mut() {
+                if let Some(merged) = latest.0.merge(&interval.0) {
+                    latest.0 = merged;
+                    continue;
+                }
+            }
+            // Otherwise, append interval
+            normalized.push(interval.clone());
+        }
+        normalized
+    }
+
+    /// Complement a bunch of accepted intervals into rejected intervals.
     pub fn complement(intervals: Vec<AcceptedInterval>) -> Vec<RejectedInterval> {
-        let accepted = AcceptedInterval::resolve(intervals);
+        let accepted = AcceptedInterval::simplify(intervals);
 
         // Obtain the intervals during which use is forbidden.
         let mut complement = Vec::new();
@@ -411,5 +581,80 @@ impl RejectedInterval {
             }
         }
         complement
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use itertools::Itertools;
+
+    use crate::types::*;
+    #[test]
+    fn test_interval_sub() {
+        let diffs = vec![
+            IntervalsDiff {
+                accepted: (1..10).map(|hh| AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: hh,
+                        minutes: 0
+                    },
+                    end: TimeOfDay {
+                        hours: hh,
+                        minutes: 10
+                    }
+                })).collect_vec(),                
+                rejected: vec![
+                    // This removes 00:00 -> 00:10 and part of 01:00 -> 01:10
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 0,
+                            minutes: 0    
+                        },
+                        end: TimeOfDay {
+                            hours: 1,
+                            minutes: 9,
+                        }
+                    }),
+                    // This doesn't intersect with anything
+                    RejectedInterval(Interval {
+                        start: TimeOfDay {
+                            hours: 1,
+                            minutes: 15    
+                        },
+                        end: TimeOfDay {
+                            hours: 1,
+                            minutes: 20,
+                        }
+                    }),
+                    RejectedInterval(Interval {
+                        start: TimeOfDay { hours: 3, minutes: 0 },
+                        end: TimeOfDay { hours: 3, minutes: 1 },
+                    })
+                ],
+            },
+            IntervalsDiff{
+                accepted: vec![
+                    AcceptedInterval(Interval {start: TimeOfDay { hours: 23, minutes: 0 }, end: TimeOfDay::END})
+                ],
+                rejected: vec![
+                    RejectedInterval(Interval { start: TimeOfDay { hours: 8, minutes: 59 }, end: TimeOfDay { hours: 9, minutes: 9 } }),
+                    RejectedInterval(Interval { start: TimeOfDay { hours: 7, minutes: 1 }, end: TimeOfDay { hours: 7, minutes: 11 } }),
+                    RejectedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 50 }, end: TimeOfDay { hours: 6, minutes: 11 } }),
+                    RejectedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 5 }, end: TimeOfDay { hours: 4, minutes: 7 } }),
+                ]
+            }
+        ];
+        let result = IntervalsDiff::compute_accepted_intervals(diffs);
+        assert_eq!(result, vec![
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 1, minutes: 9 }, end: TimeOfDay { hours: 1, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 2, minutes: 0 }, end: TimeOfDay { hours: 2, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 3, minutes: 1 }, end: TimeOfDay { hours: 3, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 0 }, end: TimeOfDay { hours: 4, minutes: 5 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 4, minutes: 7 }, end: TimeOfDay { hours: 4, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 7, minutes: 0 }, end: TimeOfDay { hours: 7, minutes: 1 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 8, minutes: 0 }, end: TimeOfDay { hours: 8, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 9, minutes: 9 }, end: TimeOfDay { hours: 9, minutes: 10 } }),
+            AcceptedInterval(Interval { start: TimeOfDay { hours: 23, minutes: 0 }, end: TimeOfDay { hours: 24, minutes: 0 } }),
+        ])
     }
 }
