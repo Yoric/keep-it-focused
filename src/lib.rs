@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -282,7 +282,7 @@ impl KeepItFocused {
             .cache
             .entry(path.clone())
             .or_insert_with(|| CacheEntry {
-                latest_update,
+                latest_update: UNIX_EPOCH,
                 creation_date,
                 config: HashMap::default(),
             });
