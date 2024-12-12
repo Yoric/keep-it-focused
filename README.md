@@ -86,7 +86,7 @@ As of this writing, keep-it-focused has the following features:
 
 The file containing your permanent configuration is at `/etc/keep-it-focused.yaml`. See `resources/test.yaml` for an example.
 
-You can also use the command-line to add new authorization intervals, see e.g.
+You can also use the command-line to add/remove authorization intervals, see e.g.
 
 ```sh
 $ keep-it-focused permanently --help
@@ -106,7 +106,7 @@ before overwriting `/etc/keep-it-focused.yaml`!
 
 You can add any number of files that are valid only for the current day in `/tmp/keep-it-focused`.
 
-You can also use the command-line to add new temporary authorization intervals, see e.g.
+You can also use the command-line to add/remove new temporary authorization intervals, see e.g.
 
 ```sh
 $ keep-it-focused exceptionally --help

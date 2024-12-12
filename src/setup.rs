@@ -255,7 +255,7 @@ pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
             let metadata = entry.metadata()?;
             if metadata.uid() != ROOT_UID || metadata.gid() != ROOT_UID {
                 std::fs::remove_file(entry.path())
-                    .with_context(|| format!("failed to remove file {}", entry.path().display()))?;
+                    .with_context(|| format!("Failed to remove file {}", entry.path().display()))?;
             }
         }
     }

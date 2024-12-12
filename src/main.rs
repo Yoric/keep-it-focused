@@ -1,10 +1,10 @@
-use std::{io::ErrorKind, ops::Not, path::PathBuf, thread};
+use std::{io::ErrorKind, ops::{Deref, Not}, path::PathBuf, thread};
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use keep_it_focused::{
     config::{Binary, Config, Extension, ProcessFilter, WebFilter},
-    types::{DayOfWeek, Interval, TimeOfDay, DAY_BEGINS, DAY_ENDS},
+    types::{DayOfWeek, Interval, TimeOfDay},
     uid_resolver::{Resolver, Uid},
     KeepItFocused,
 };
@@ -77,44 +77,61 @@ enum Command {
     /// Add a temporary rule.
     Exceptionally {
         #[command(subcommand)]
-        rule: Rule<ExceptionalInstructions>,
+        verb: Verb<ExceptionalFilter>,
     },
 
     /// Add a permanent rule.
     Permanently {
         #[command(subcommand)]
-        rule: Rule<PermanentInstructions>,
+        verb: Verb<PermanentFilter>,
     },
 }
 
-#[derive(Subcommand, Debug)]
-enum Rule<I> where I: clap::Args {
+#[derive(Subcommand, Debug, Clone)]
+enum Kind {
     Domain {
-        /// The domain (subdomains are included automatically).
+        /// The domain, e.g. "youtube.com" (subdomains are included automatically).
+        #[arg(required=true)]
         domains: Vec<String>,
-
-        #[command(flatten)]
-        instructions: I,
     },
     Binary {
-        /// The binary (globs are permitted).
+        /// The binary, e.g. "**/tetris" (globs are permitted).
+        #[arg(required=true)]
         binaries: Vec<String>,
-
-        #[command(flatten)]
-        instructions: I,
     },
 }
-impl<T> Rule<T> where T: clap::Args {
-    pub fn instructions(&self) -> &T {
+
+#[derive(Subcommand, Debug, Clone)]
+enum Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+    /// Allow an interval of time.
+    Allow(I),
+
+    /// Forbid an interval of time.
+    Forbid(I),
+}
+impl<I> AsRef<I> for Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+    fn as_ref(&self) -> &I {
         match *self {
-            Self::Domain { ref instructions, .. } => instructions,
-            Self::Binary { ref instructions, .. } => instructions
+            Self::Allow(ref i) => i,
+            Self::Forbid(ref i) => i
+        }
+    }
+}
+impl<I> Deref for Verb<I> where I: clap::Args + std::fmt::Debug + Clone {
+    type Target = I;
+    fn deref(&self) -> &I {
+        match *self {
+            Self::Allow(ref i) => i,
+            Self::Forbid(ref i) => i
         }
     }
 }
 
 #[derive(clap::Args, Debug, Clone)]
-struct PermanentInstructions {
+struct PermanentFilter {
+    #[command(subcommand)]
+    kind: Kind,
+
     #[arg(long)]
     user: String,
 
@@ -132,17 +149,20 @@ struct PermanentInstructions {
 }
 
 #[derive(clap::Args, Debug, Clone)]
-struct ExceptionalInstructions {
+struct ExceptionalFilter {
+    #[command(subcommand)]
+    kind: Kind,
+
     #[arg(long)]
     user: String,
 
     /// When the authorization starts.
-    #[arg(long, value_parser=TimeOfDay::parse)]
-    start: Option<TimeOfDay>,
+    #[arg(long, value_parser=TimeOfDay::parse, default_value="00:00")]
+    start: TimeOfDay,
 
     /// When the authorization stops.
-    #[arg(long, value_parser=TimeOfDay::parse)]
-    end: Option<TimeOfDay>,
+    #[arg(long, value_parser=TimeOfDay::parse, default_value="24:00")]
+    end: TimeOfDay,
 }
 
 /// A daemon designed to help avoid using some programs or websites
@@ -263,13 +283,13 @@ fn main() -> Result<(), anyhow::Error> {
             info!("setup complete");
         }
         Command::Permanently {
-            rule,
+            verb,
         } => {
             if Uid::me().is_root().not() {
                 warn!("this command is meant to be executed as root");
             }
             let mut resolver = Resolver::new();
-            resolver.resolve(&rule.instructions().user)?;
+            resolver.resolve(&verb.as_ref().user)?;
 
             // 1. Pick a temporary file.
             let temp_dir = std::env::temp_dir();
@@ -282,7 +302,7 @@ fn main() -> Result<(), anyhow::Error> {
                         continue;
                     }
                     Err(err) => {
-                        return Err(err).context("Could not create file to write temporary rule")
+                        return Err(err).context("Could not create file to write temporary rules")
                     }
                     Ok(file) => break (path, file),
                 };
@@ -293,7 +313,7 @@ fn main() -> Result<(), anyhow::Error> {
                 .context("Failed to open main configuration")?;
             let mut config: Config = serde_yaml::from_reader(std::io::BufReader::new(input))
                 .context("Failed to read/parse main configuration")?;
-            let entry = config.users.entry(rule.instructions().user.clone()).or_default();
+            let entry = config.users.entry(verb.as_ref().user.clone()).or_default();
 
             // 2. Amend it to a temporary file.
             //
@@ -303,28 +323,33 @@ fn main() -> Result<(), anyhow::Error> {
             //    broken /etc/keep-it-focused.yaml.
             // 3. Decreases (but does not eliminate) the chances of a power outage while a change
             //    causing a broken /etc/keep-it-focused.yaml.
-            match rule {
-                Rule::Domain { ref domains, instructions } => {
-                    for day in instructions.days {
-                        let day_config = entry.0.entry(day).or_default();
+            let intervals = vec![Interval { start: verb.as_ref().start, end: verb.as_ref().end }];
+            let (permitted, forbidden) = match verb {
+                Verb::Allow(_) => (intervals, vec![]),
+                Verb::Forbid(_) => (vec![], intervals)
+            };
+            match verb.as_ref().kind {
+                Kind::Domain { ref domains } => {
+                    for day in &verb.days {
+                        let day_config = entry.0.entry(*day).or_default();
                         for domain in domains {
                             day_config.web.push(WebFilter {
                                 domain: domain.clone(),
-                                permitted: vec![Interval { start: instructions.start, end: instructions.end }],
-                                forbidden: vec![],
+                                permitted: permitted.clone(),
+                                forbidden: forbidden.clone(),
                             });
                         }    
                     }
                 }
-                Rule::Binary { ref binaries, instructions } => {
-                    for day in instructions.days {
-                        let day_config = entry.0.entry(day).or_default();
+                Kind::Binary { ref binaries } => {
+                    for day in &verb.days {
+                        let day_config = entry.0.entry(*day).or_default();
                         for path in binaries {
                             let binary = Binary::try_new(path.as_ref())?;
                             day_config.processes.push(ProcessFilter {
                                 binary: binary.clone(),
-                                permitted: vec![Interval { start: instructions.start, end: instructions.end }],
-                                forbidden: vec![],
+                                permitted: permitted.clone(),
+                                forbidden: forbidden.clone(),
                             });
                         }
                     }
@@ -353,7 +378,7 @@ fn main() -> Result<(), anyhow::Error> {
             std::fs::rename(temp_file, args.main_config).context("Failed to commit changes")?;
         }
         Command::Exceptionally {
-            rule,
+            verb,
         } => {
             if Uid::me().is_root().not() {
                 warn!("this command is meant to be executed as root");
@@ -362,24 +387,30 @@ fn main() -> Result<(), anyhow::Error> {
             // Note: we expect that the configuration directory has been created already.
             // Generate config.
             let mut extension = Extension::default();
-            let day_config = extension.users.entry(rule.instructions().user.clone()).or_default();
-            match rule {
-                Rule::Domain { domains, instructions } => {
+            let day_config = extension.users.entry(verb.user.clone()).or_default();
+            let intervals = vec![Interval { start: verb.start, end: verb.end }];
+            let (permitted, forbidden) = match verb {
+                Verb::Allow(_) => (intervals, vec![]),
+                Verb::Forbid(_) => (vec![], intervals)
+            };
+            debug!("exceptionally {:?}, {:?}", permitted, forbidden);
+            match &verb.kind {
+                Kind::Domain { domains } => {
                     for domain in domains {
                         day_config.web.push(WebFilter {
-                            domain,
-                            permitted: vec![Interval { start: instructions.start.unwrap_or(DAY_BEGINS), end: instructions.end. unwrap_or(DAY_ENDS) }],
-                            forbidden: vec![],
+                            domain: domain.clone(),
+                            permitted: permitted.clone(),
+                            forbidden: forbidden.clone(),
                         });
                     }
                 }
-                Rule::Binary { binaries , instructions} => {
+                Kind::Binary { binaries} => {
                     for path in binaries {
                         let binary = Binary::try_new(path.as_ref())?;
                         day_config.processes.push(ProcessFilter {
-                            binary,
-                            permitted: vec![Interval { start: instructions.start.unwrap_or(DAY_BEGINS), end: instructions.end. unwrap_or(DAY_ENDS) }],
-                            forbidden: vec![],
+                            binary: binary.clone(),
+                            permitted: permitted.clone(),
+                            forbidden: forbidden.clone(),
                         });
                     }
                 }
