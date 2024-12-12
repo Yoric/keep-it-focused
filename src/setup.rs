@@ -10,6 +10,7 @@ use std::{
 use anyhow::Context;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
+use std::os::unix::fs::MetadataExt;
 
 use crate::config;
 
@@ -223,13 +224,16 @@ pub fn setup_daemon(auto_start: bool) -> Result<(), anyhow::Error> {
 
 pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
     // Note: this direcotry MUST belong to root and be writeable only by root.
-    match std::fs::create_dir_all(path) {
-        Ok(()) => {}
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => { /* not an error */ }
+    let trusted = match std::fs::create_dir_all(path) {
+        Ok(()) => true,
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            /* not an error */
+            false
+        }
         Err(err) => {
             return Err(err).context("Failed to create directory to store temporary rules");
         }
-    }
+    };
 
     let mut permissions = std::fs::metadata(path)
         .context("Failed to read metadata on temporary rules dir")?
@@ -237,5 +241,24 @@ pub fn make_extension_dir(path: &Path) -> Result<(), anyhow::Error> {
     permissions.set_mode(0o700);
     std::fs::set_permissions(path, permissions)
         .context("Failed to set permissions on temporary rules dir")?;
+
+        if !trusted {
+        // The directory was already created, it belongs to us, but it may have been created by someone else.
+        const ROOT_UID: u32 = 0;
+        const ROOT_GID: u32 = 0;
+        // First, make sure that we're the only ones who can access it.
+        std::os::unix::fs::chown(path, Some(ROOT_UID), Some(ROOT_GID))
+            .context("Failed to acquire directory to store temporary rules")?;
+        // Then remove any content that was created by anyone else.
+        for entry in std::fs::read_dir(path).context("Could not walk temporary rules dir")? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.uid() != ROOT_UID || metadata.gid() != ROOT_UID {
+                std::fs::remove_file(entry.path())
+                    .with_context(|| format!("failed to remove file {}", entry.path().display()))?;
+            }
+        }
+    }
+
     Ok(())
 }
