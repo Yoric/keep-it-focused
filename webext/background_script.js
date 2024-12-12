@@ -1,9 +1,14 @@
 // On startup, setup.
 browser.runtime.onInstalled.addListener(async () => {
-    console.log("keep-it-focused", "setup", "starting");
-    await InterdictionManager.init();
-    await ConfigManager.update();
-    console.log("keep-it-focused", "setup", "complete");
+    try {
+        console.log("keep-it-focused", "setup", "starting");
+        await InterdictionManager.init();
+        console.log("keep-it-focused", "setup", "launching first update");
+        await ConfigManager.update();
+        console.log("keep-it-focused", "setup", "complete");
+    } catch (ex) {
+        console.error("keep-it-focused", "setup", "error", ex);
+    }
 });
 
 // Every one minute, check for updates.
@@ -14,7 +19,13 @@ browser.alarms.create(
 )
 
 browser.alarms.onAlarm.addListener(async () => {
-    await ConfigManager.update();
+    try {
+        console.debug("keep-it-focused", "tick", "start")
+        await ConfigManager.update();
+        console.debug("keep-it-focused", "tick", "stop")
+    } catch (ex) {
+        console.error("keep-it-focused", "tick", "error", ex);
+    }
 });
 
 // The minimal delay between two updates, in ms.
@@ -92,28 +103,33 @@ let InterdictionManager = {
     addInterdiction(domain, interval) {
         console.log("keep-it-focused", "InterdictionManager", "adding interdiction", domain, "to", this._rules);
         let interdiction;
+        let shouldAddRule;
         if (interdiction = this._interdictionsByDomain.get(domain)) {
             console.log("keep-it-focused", "InterdictionManager", "this interdiction is already in progress, updating interval");
             interdiction.interval = interval;
-            return;
+            shouldAddRule = false;
+        } else {
+            interdiction = new Interdiction(domain, interval);
+            this._interdictionsByDomain.set(interdiction.domain, interdiction);
+            shouldAddRule = true;
         }
-        interdiction = new Interdiction(domain, interval);
-        this._interdictionsByDomain.set(interdiction.domain, interdiction);
         this._urlFilters = null; // We'll need to recompute url filters.
         if (this._rulesByDomain.get(domain)) {
             // This can happen e.g. when debugging an extension.
             console.log("keep-it-focused", "InterdictionManager", "we already have a rule for this interdiction, skipping");
             return;
         }
-        this._addRules.push({
-            action: {
-                type: "block"
-            },
-            condition: {
-                urlFilter: "||" + interdiction.domain
-            },
-            id: interdiction.id,
-        });
+        if (shouldAddRule) {
+            this._addRules.push({
+                action: {
+                    type: "block"
+                },
+                condition: {
+                    urlFilter: "||" + interdiction.domain
+                },
+                id: interdiction.id,
+            });    
+        }
     },
 
     // Remove an interdiction.
@@ -149,16 +165,24 @@ let InterdictionManager = {
         let offendingTabs = await this.findOffendingTabs();
         console.debug("keep-it-focused", "InterdictionManager", "time to unload tabs", offendingTabs);
         for (let { tab } of offendingTabs) {
-            console.debug("keep-it-focused", "InterdictionManager", "unloading tab", tab, "from", tab.url);
-            await browser.tabs.update(tab.id, {
-                url: "about:blank",
-                autoDiscardable: true,
-            })
-            console.debug("keep-it-focused", "InterdictionManager", "tab unloaded");
+            await this.unloadTab(tab);
         }
 
         this._addRules.length = 0;
         this._removeRuleIds.length = 0;
+    },
+
+    async unloadTab(tab) {
+        console.debug("keep-it-focused", "InterdictionManager", "unloading tab", tab, tab.id);
+        let id = tab.id;
+        if (typeof id != "number") {
+            throw new TypeError("invalid tab id: " + id);
+        }
+        await browser.tabs.update(id, {
+            url: "about:blank",
+            autoDiscardable: true,
+        })
+        console.debug("keep-it-focused", "InterdictionManager", "tab unloaded");
     },
 
     // The current list of domain -> interdiction. Please do not modify this.
@@ -170,18 +194,23 @@ let InterdictionManager = {
         if (!this._urlFilters) {
             browser.tabs.onUpdated.removeListener(this._tabListener);
             this._urlFilters = [...this._interdictionsByDomain.keys()
-                .map((k) => `*://*.${k}/`)];
+                .map((k) => `*://*.${k}/*`)];
             console.log("keep-it-focused", "InterdictionManager", "recomputed url filters", this._urlFilters);
-            browser.tabs.onUpdated.addListener(this._tabListener, {
-                urls: this._urlFilters,
-                properties: ["url"],
-            })
+            if (this._urlFilters.length > 0) {
+                browser.tabs.onUpdated.addListener(this._tabListener, {
+                    urls: this._urlFilters,
+                    properties: ["url"],
+                });    
+            }
+            console.debug("keep-it-focused", "InterdictionManager", "added listeners", this._urlFilters);
         }
+        console.debug("keep-it-focused", "InterdictionManager", "url filters", this._urlFilters);
         return this._urlFilters
     },
 
-    _tabListener(tabId) {
+    _tabListener(tabId, change, tab) {
         // Block from navigating to a forbidden URL.
+        console.debug("keep-it-focused", "InterdictionManager", "tab attempting to navigate to unwanted url", change, tab);
         browser.tabs.update(tabId, {
             url: "about:blank"
         })
@@ -189,10 +218,15 @@ let InterdictionManager = {
 
     // Return the list of {tab} for tabs currently visiting a forbidden domain.
     async findOffendingTabs() {
-        console.debug("keep-it-focused", "InterdictionManager", "checking for offending tabs");
+        let urlFilters = this.urlFilters();
+        console.debug("keep-it-focused", "InterdictionManager", "checking for offending tabs", urlFilters);
+        if (urlFilters.length == 0) {
+            return []
+        }
         let currentTabs = await browser.tabs.query({
-            url: this.urlFilters()
+            url: urlFilters
         });
+        console.debug("keep-it-focused", "InterdictionManager", "offending tabs", currentTabs);
         if (currentTabs.length > 0) {
             console.log("keep-it-focused", "InterdictionManager", "found offending tabs", currentTabs);
         } else {
@@ -332,7 +366,7 @@ let ConfigManager = {
                 // A permission interval is closing, do we need to notify?
                 let tabs = await browser.tabs.query({
                     active: true,
-                    url: `*://*.${domain}/`,
+                    url: `*://*.${domain}/*`,
                 });
                 console.debug("keep-it-focused", "ConfigManager", "looking for activity that needs to stop", domain, tabs);
                 if (tabs.length == 0) {
