@@ -12,6 +12,7 @@ name = "keep-it-focused"
 anyhow = "1.0.91"
 chrono = "0.4.38"
 clap = { version = "4.5.18", features = ["derive"] }
+derive_more = { version = "1.0.0", features = ["as_ref", "full"] }
 globset = { version = "0.4.15", features = ["serde", "serde1", "simd-accel"] }
 itertools = "0.13.0"
 kill_tree = "0.2.4"

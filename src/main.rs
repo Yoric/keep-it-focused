@@ -8,8 +8,8 @@ use std::{
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use keep_it_focused::{
-    config::{Binary, Config, Extension, ProcessFilter, WebFilter},
-    types::{DayOfWeek, Interval, TimeOfDay},
+    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
+    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
     uid_resolver::{Resolver, Uid},
     KeepItFocused,
 };
@@ -24,7 +24,10 @@ const DEFAULT_PORT: &str = "7878";
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Check the configuration for syntax.
-    Check,
+    Check {
+        /// If specified, display today's configuration for this user.
+        user: Option<String>
+    },
 
     /// Run the daemon.
     ///
@@ -170,13 +173,17 @@ struct ExceptionalFilter {
     #[arg(long)]
     user: String,
 
-    /// When the authorization starts.
-    #[arg(long, value_parser=TimeOfDay::parse, default_value="00:00")]
-    start: TimeOfDay,
+    /// When it starts [default: immediately].
+    #[arg(long, value_parser=TimeOfDay::parse)]
+    start: Option<TimeOfDay>,
 
-    /// When the authorization stops.
-    #[arg(long, value_parser=TimeOfDay::parse, default_value="24:00")]
-    end: TimeOfDay,
+    /// When it stops [default: end of day].
+    #[arg(long, value_parser=TimeOfDay::parse)]
+    end: Option<TimeOfDay>,
+
+    /// How long it lasts, in minutes (conflicts with `end`).
+    #[arg(long, alias="duration", value_parser=TimeOfDay::parse, conflicts_with_all=["end"])]
+    minutes: Option<u16>,
 }
 
 /// A daemon designed to help avoid using some programs or websites
@@ -224,15 +231,25 @@ fn main() -> Result<(), anyhow::Error> {
                 keep_it_focused::remove_ip_tables()?;
             }
         }
-        Command::Check => {
-            let reader = std::fs::File::open(&args.main_config)
-                .with_context(|| format!("could not open file {}", args.main_config.display()))?;
-            let config: keep_it_focused::config::Config = serde_yaml::from_reader(reader)
-                .with_context(|| format!("could not parse file {}", args.main_config.display()))?;
-            info!(
-                "config parsed, seems legit\n{}",
-                serde_yaml::to_string(&config).expect("failed to display config")
-            );
+        Command::Check { user } => {
+            let mut configurator = ConfigManager::new(ConfigOptions {
+                main_config: args.main_config,
+                extensions_dir: args.extensions,
+            });
+            configurator.load_config()
+                .context("invalid config")?;
+            info!("config parsed, seems legit");
+            if let Some(user) = user {
+                let mut resolver = Resolver::new();
+                let uid = resolver.resolve(&Username(user.clone()))?;
+                match configurator.config().today_per_user().get(&uid) {
+                    None => info!("on this day, no config for user {user}"),
+                    Some(config) =>
+                        info!("today's config for {user}\n {}", serde_yaml::to_string(&config)
+                            .context("Failed to serialize")?)
+
+                }
+            }
         }
         Command::Run {
             sleep_s,
@@ -301,7 +318,7 @@ fn main() -> Result<(), anyhow::Error> {
                 warn!("this command is meant to be executed as root");
             }
             let mut resolver = Resolver::new();
-            resolver.resolve(&verb.as_ref().user)?;
+            resolver.resolve(&Username(verb.as_ref().user.clone()))?;
 
             // 1. Pick a temporary file.
             let temp_dir = std::env::temp_dir();
@@ -325,7 +342,10 @@ fn main() -> Result<(), anyhow::Error> {
                 .context("Failed to open main configuration")?;
             let mut config: Config = serde_yaml::from_reader(std::io::BufReader::new(input))
                 .context("Failed to read/parse main configuration")?;
-            let entry = config.users.entry(verb.as_ref().user.clone()).or_default();
+            let entry = config
+                .users
+                .entry(Username(verb.as_ref().user.clone()))
+                .or_default();
 
             // 2. Amend it to a temporary file.
             //
@@ -349,7 +369,7 @@ fn main() -> Result<(), anyhow::Error> {
                         let day_config = entry.0.entry(*day).or_default();
                         for domain in domains {
                             day_config.web.push(WebFilter {
-                                domain: domain.clone(),
+                                domain: Domain(domain.clone()),
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),
                             });
@@ -400,10 +420,18 @@ fn main() -> Result<(), anyhow::Error> {
             // Note: we expect that the configuration directory has been created already.
             // Generate config.
             let mut extension = Extension::default();
-            let day_config = extension.users.entry(verb.user.clone()).or_default();
+            let day_config = extension
+                .users
+                .entry(Username(verb.user.clone()))
+                .or_default();
+            let start = verb.start.unwrap_or(TimeOfDay::now());
+            let end = match verb.minutes {
+                Some(duration) => TimeOfDay::from_minutes(TimeOfDay::now().as_minutes() + duration),
+                None => verb.end.unwrap_or(TimeOfDay::END)
+            };
             let intervals = vec![Interval {
-                start: verb.start,
-                end: verb.end,
+                start,
+                end,
             }];
             let (permitted, forbidden) = match verb {
                 Verb::Allow(_) => (intervals, vec![]),
@@ -414,7 +442,7 @@ fn main() -> Result<(), anyhow::Error> {
                 Kind::Domain { domains } => {
                     for domain in domains {
                         day_config.web.push(WebFilter {
-                            domain: domain.clone(),
+                            domain: Domain(domain.clone()),
                             permitted: permitted.clone(),
                             forbidden: forbidden.clone(),
                         });

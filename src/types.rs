@@ -1,7 +1,12 @@
-use std::{fmt::Display, ops::Not, time::Duration};
+use std::{
+    fmt::Display,
+    ops::Not,
+    time::{Duration, SystemTime},
+};
 
 use anyhow::anyhow;
-use chrono::{Datelike, Local, Timelike};
+use chrono::{DateTime, Datelike, Local, Timelike};
+use derive_more::derive::{AsRef, Deref, Display};
 use lazy_regex::lazy_regex;
 #[allow(unused)]
 use log::{debug, trace};
@@ -28,7 +33,7 @@ impl TimeOfDay {
     }
     pub fn from_minutes(minutes: u16) -> Self {
         let mm = (minutes % 60) as u8;
-        let hh = ((minutes / 60) % 23) as u8;
+        let hh = u16::min(minutes / 60, 24) as u8;
         Self {
             hours: hh,
             minutes: mm,
@@ -808,4 +813,16 @@ mod test {
             ]
         )
     }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Deserialize, Serialize, AsRef, Deref, Display)]
+pub struct Username(pub String);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Deserialize, Serialize, AsRef, Deref, Display)]
+pub struct Domain(pub String);
+
+pub fn is_today(date: SystemTime) -> bool {
+    let latest_update_chrono = DateTime::<Local>::from(date);
+    let today = Local::now();
+    today.num_days_from_ce() == latest_update_chrono.num_days_from_ce()
 }
