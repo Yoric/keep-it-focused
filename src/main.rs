@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use keep_it_focused::{
-    config::{Binary, Config, Extension, ProcessFilter, WebFilter},
+    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
     types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
     uid_resolver::{Resolver, Uid},
     KeepItFocused,
@@ -24,7 +24,10 @@ const DEFAULT_PORT: &str = "7878";
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Check the configuration for syntax.
-    Check,
+    Check {
+        /// If specified, display today's configuration for this user.
+        user: Option<String>
+    },
 
     /// Run the daemon.
     ///
@@ -224,16 +227,25 @@ fn main() -> Result<(), anyhow::Error> {
                 keep_it_focused::remove_ip_tables()?;
             }
         }
-        Command::Check => {
-            // FIXME: We should check all files, shouldn't we?
-            let reader = std::fs::File::open(&args.main_config)
-                .with_context(|| format!("could not open file {}", args.main_config.display()))?;
-            let config: keep_it_focused::config::Config = serde_yaml::from_reader(reader)
-                .with_context(|| format!("could not parse file {}", args.main_config.display()))?;
-            info!(
-                "config parsed, seems legit\n{}",
-                serde_yaml::to_string(&config).expect("failed to display config")
-            );
+        Command::Check { user } => {
+            let mut configurator = ConfigManager::new(ConfigOptions {
+                main_config: args.main_config,
+                extensions_dir: args.extensions,
+            });
+            configurator.load_config()
+                .context("invalid config")?;
+            info!("config parsed, seems legit");
+            if let Some(user) = user {
+                let mut resolver = Resolver::new();
+                let uid = resolver.resolve(&Username(user.clone()))?;
+                match configurator.config().today_per_user().get(&uid) {
+                    None => info!("on this day, no config for user {user}"),
+                    Some(config) =>
+                        info!("today's config for {user}\n {}", serde_yaml::to_string(&config)
+                            .context("Failed to serialize")?)
+
+                }
+            }
         }
         Command::Run {
             sleep_s,

@@ -1,9 +1,5 @@
 use std::{
-    collections::HashMap,
-    ops::Not,
-    path::{Path, PathBuf},
-    rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
+    collections::HashMap, ops::Not, path::{Path, PathBuf}, rc::Rc, time::{SystemTime, UNIX_EPOCH}
 };
 
 use anyhow::Context;
@@ -57,6 +53,9 @@ impl Precompiled {
             })
             .collect();
         data
+    }
+    pub fn today_per_user(&self) -> &HashMap<Uid, UserInstructions> {
+        &self.today_per_user
     }
 }
 
