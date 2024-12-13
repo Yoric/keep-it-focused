@@ -9,7 +9,7 @@ use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
 use keep_it_focused::{
     config::{Binary, Config, Extension, ProcessFilter, WebFilter},
-    types::{DayOfWeek, Interval, TimeOfDay},
+    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
     uid_resolver::{Resolver, Uid},
     KeepItFocused,
 };
@@ -225,6 +225,7 @@ fn main() -> Result<(), anyhow::Error> {
             }
         }
         Command::Check => {
+            // FIXME: We should check all files, shouldn't we?
             let reader = std::fs::File::open(&args.main_config)
                 .with_context(|| format!("could not open file {}", args.main_config.display()))?;
             let config: keep_it_focused::config::Config = serde_yaml::from_reader(reader)
@@ -301,7 +302,7 @@ fn main() -> Result<(), anyhow::Error> {
                 warn!("this command is meant to be executed as root");
             }
             let mut resolver = Resolver::new();
-            resolver.resolve(&verb.as_ref().user)?;
+            resolver.resolve(&Username(verb.as_ref().user.clone()))?;
 
             // 1. Pick a temporary file.
             let temp_dir = std::env::temp_dir();
@@ -325,7 +326,10 @@ fn main() -> Result<(), anyhow::Error> {
                 .context("Failed to open main configuration")?;
             let mut config: Config = serde_yaml::from_reader(std::io::BufReader::new(input))
                 .context("Failed to read/parse main configuration")?;
-            let entry = config.users.entry(verb.as_ref().user.clone()).or_default();
+            let entry = config
+                .users
+                .entry(Username(verb.as_ref().user.clone()))
+                .or_default();
 
             // 2. Amend it to a temporary file.
             //
@@ -349,7 +353,7 @@ fn main() -> Result<(), anyhow::Error> {
                         let day_config = entry.0.entry(*day).or_default();
                         for domain in domains {
                             day_config.web.push(WebFilter {
-                                domain: domain.clone(),
+                                domain: Domain(domain.clone()),
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),
                             });
@@ -400,7 +404,10 @@ fn main() -> Result<(), anyhow::Error> {
             // Note: we expect that the configuration directory has been created already.
             // Generate config.
             let mut extension = Extension::default();
-            let day_config = extension.users.entry(verb.user.clone()).or_default();
+            let day_config = extension
+                .users
+                .entry(Username(verb.user.clone()))
+                .or_default();
             let intervals = vec![Interval {
                 start: verb.start,
                 end: verb.end,
@@ -414,7 +421,7 @@ fn main() -> Result<(), anyhow::Error> {
                 Kind::Domain { domains } => {
                     for domain in domains {
                         day_config.web.push(WebFilter {
-                            domain: domain.clone(),
+                            domain: Domain(domain.clone()),
                             permitted: permitted.clone(),
                             forbidden: forbidden.clone(),
                         });

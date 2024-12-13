@@ -1,7 +1,9 @@
+pub mod manager;
+
 use core::fmt;
 use std::{collections::HashMap, fmt::Display, hash::Hash, ops::Not, path::PathBuf};
 
-use crate::types::{DayOfWeek, Interval};
+use crate::types::{DayOfWeek, Domain, Interval, Username};
 use anyhow::anyhow;
 use globset::{Glob, GlobMatcher};
 use log::trace;
@@ -110,7 +112,7 @@ pub struct ProcessFilter {
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct WebFilter {
-    pub domain: String,
+    pub domain: Domain,
 
     /// Intervals during which the domain is permitted.
     ///
@@ -235,20 +237,20 @@ impl<'de> Deserialize<'de> for Week {
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Config {
     #[serde(default)]
-    pub users: HashMap<String /*username*/, Week>,
+    pub users: HashMap<Username, Week>,
 }
 
 /// The contents of a patch file, valid only for one day.
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Extension {
-    pub users: HashMap<String, DayConfig>,
+    pub users: HashMap<Username, DayConfig>,
 }
 
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
 
-    use crate::types::TimeOfDay;
+    use crate::types::{TimeOfDay, Username};
 
     use super::{Config, DayOfWeek};
 
@@ -279,7 +281,10 @@ mod test {
                                   end:   0003
         "#;
         let config: Config = serde_yaml::from_str(sample).expect("invalid config");
-        let mickey = config.users.get("mickey").expect("missing user mickey");
+        let mickey = config
+            .users
+            .get(&Username("mickey".to_string()))
+            .expect("missing user mickey");
         let mickey_monday = mickey.0.get(&DayOfWeek::monday()).unwrap();
         let mickey_tuesday = mickey.0.get(&DayOfWeek::tuesday()).unwrap();
         let mickey_wed = mickey.0.get(&DayOfWeek::wednesday()).unwrap();

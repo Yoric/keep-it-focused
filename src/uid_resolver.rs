@@ -4,6 +4,8 @@ use uucore::entries::{uid2usr, Locate, Passwd};
 
 use anyhow::{anyhow, Context};
 
+use crate::types::Username;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u32);
 impl Uid {
@@ -19,7 +21,7 @@ impl Uid {
 }
 
 pub struct Resolver {
-    username_to_uid: HashMap<String, Uid>,
+    username_to_uid: HashMap<Username, Uid>,
 }
 
 impl Default for Resolver {
@@ -34,14 +36,14 @@ impl Resolver {
             username_to_uid: HashMap::new(),
         }
     }
-    pub fn resolve(&mut self, name: &str) -> Result<Uid, anyhow::Error> {
+    pub fn resolve(&mut self, name: &Username) -> Result<Uid, anyhow::Error> {
         if let Some(uid) = self.username_to_uid.get(name) {
             return Ok(*uid);
         }
-        let passwd = Passwd::locate(name)
+        let passwd = Passwd::locate(name.as_str())
             .with_context(|| format!("Could not find information for user {name}"))?;
         let uid = Uid(passwd.uid);
-        self.username_to_uid.insert(name.to_string(), uid);
+        self.username_to_uid.insert(name.clone(), uid);
         debug!("resolved user {name} => {}", uid.0);
         Ok(uid)
     }
