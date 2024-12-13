@@ -3,18 +3,20 @@ ifneq (,$(wildcard ./.env))
     export
 endif
 
-all: rust webext
+all: daemon webext
 
 test:
 	cargo test --all
 
-rust:
+# Build the daemon
+daemon:
 	cargo build --release
 	cp target/release/keep-it-focused dist/
 
 init:
 	npm install -g web-ext
 
+# Build and sign the web extension
 .PHONY: webext
 webext:
 	\rm -f target/webext/*

@@ -182,7 +182,7 @@ struct ExceptionalFilter {
     end: Option<TimeOfDay>,
 
     /// How long it lasts, in minutes (conflicts with `end`).
-    #[arg(long, alias="duration", value_parser=TimeOfDay::parse, conflicts_with_all=["end"])]
+    #[arg(long, alias="duration", conflicts_with_all=["end"])]
     minutes: Option<u16>,
 }
 
@@ -223,6 +223,7 @@ fn main() -> Result<(), anyhow::Error> {
     } else {
         simple_logger::SimpleLogger::new().env().init().unwrap();
     }
+    info!("Starting keep-it-focused {}", env!("CARGO_PKG_VERSION"));
 
     let args = Args::parse();
     match args.command {
