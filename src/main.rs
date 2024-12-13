@@ -173,13 +173,17 @@ struct ExceptionalFilter {
     #[arg(long)]
     user: String,
 
-    /// When the authorization starts.
-    #[arg(long, value_parser=TimeOfDay::parse, default_value="00:00")]
-    start: TimeOfDay,
+    /// When it starts [default: immediately].
+    #[arg(long, value_parser=TimeOfDay::parse)]
+    start: Option<TimeOfDay>,
 
-    /// When the authorization stops.
-    #[arg(long, value_parser=TimeOfDay::parse, default_value="24:00")]
-    end: TimeOfDay,
+    /// When it stops [default: end of day].
+    #[arg(long, value_parser=TimeOfDay::parse)]
+    end: Option<TimeOfDay>,
+
+    /// How long it lasts, in minutes (conflicts with `end`).
+    #[arg(long, alias="duration", value_parser=TimeOfDay::parse, conflicts_with_all=["end"])]
+    minutes: Option<u16>,
 }
 
 /// A daemon designed to help avoid using some programs or websites
@@ -420,9 +424,14 @@ fn main() -> Result<(), anyhow::Error> {
                 .users
                 .entry(Username(verb.user.clone()))
                 .or_default();
+            let start = verb.start.unwrap_or(TimeOfDay::now());
+            let end = match verb.minutes {
+                Some(duration) => TimeOfDay::from_minutes(TimeOfDay::now().as_minutes() + duration),
+                None => verb.end.unwrap_or(TimeOfDay::END)
+            };
             let intervals = vec![Interval {
-                start: verb.start,
-                end: verb.end,
+                start,
+                end,
             }];
             let (permitted, forbidden) = match verb {
                 Verb::Allow(_) => (intervals, vec![]),

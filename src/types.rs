@@ -33,7 +33,7 @@ impl TimeOfDay {
     }
     pub fn from_minutes(minutes: u16) -> Self {
         let mm = (minutes % 60) as u8;
-        let hh = ((minutes / 60) % 23) as u8;
+        let hh = u16::min(minutes / 60, 24) as u8;
         Self {
             hours: hh,
             minutes: mm,
