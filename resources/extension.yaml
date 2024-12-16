@@ -1,0 +1,12 @@
+# A simple extension 
+users:
+  david:
+    processes:
+    - binary: gedit
+      # Note: If `permitted` is empty, it's *never* permitted.
+      permitted:
+      - start: '00:00'
+        end: '24:00'
+      forbidden:
+      - start: '1133'
+        end: '1138'

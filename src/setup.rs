@@ -25,6 +25,7 @@ fn exe_name() -> String {
 /// Copy the addon to /etc/firefox/addons.
 pub fn copy_addon() -> Result<(), anyhow::Error> {
     const ADDON_SOURCE_SUBDIRECTORY: &str = "target/webext";
+    const DIST_SOURCE_SUBDIRECTORY: &str = "dist";
     const ADDONS_PATH: &str = "/etc/firefox/addons";
 
     // Create directory.
@@ -33,7 +34,11 @@ pub fn copy_addon() -> Result<(), anyhow::Error> {
 
     // Copy xpi.
     let dest = Path::new(ADDONS_PATH).join(ADDON_FILE_NAME);
-    for dir in [ADDON_SOURCE_SUBDIRECTORY, "."] {
+    for dir in [
+        ADDON_SOURCE_SUBDIRECTORY,
+        DIST_SOURCE_SUBDIRECTORY,
+        "."
+    ] {
         let source = Path::new(dir).join(ADDON_FILE_NAME);
         if std::fs::metadata(&source).is_ok() {
             debug!("copying {} to {}", source.display(), dest.display());

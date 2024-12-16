@@ -7,19 +7,23 @@ use std::{
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
-use keep_it_focused::{
-    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
-    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
-    uid_resolver::{Resolver, Uid},
-    KeepItFocused,
-};
 use log::{debug, info, warn, LevelFilter};
 use procfs::sys::kernel::random::uuid;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
+use keep_it_focused::{
+    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
+    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
+    KeepItFocused,
+};
+
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
 const DEFAULT_EXTENSIONS_PATH: &str = "/tmp/keep-it-focused.d/";
 const DEFAULT_PORT: &str = "7878";
+
+#[cfg(target_family="unix")]
+use keep_it_focused::unix::uid_resolver::{Resolver, Uid};
+
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -182,7 +186,7 @@ struct ExceptionalFilter {
     end: Option<TimeOfDay>,
 
     /// How long it lasts, in minutes (conflicts with `end`).
-    #[arg(long, alias="duration", value_parser=TimeOfDay::parse, conflicts_with_all=["end"])]
+    #[arg(long, alias="duration", conflicts_with_all=["end"])]
     minutes: Option<u16>,
 }
 
@@ -223,6 +227,7 @@ fn main() -> Result<(), anyhow::Error> {
     } else {
         simple_logger::SimpleLogger::new().env().init().unwrap();
     }
+    info!("Starting keep-it-focused {}", env!("CARGO_PKG_VERSION"));
 
     let args = Args::parse();
     match args.command {

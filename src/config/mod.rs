@@ -274,6 +274,7 @@ mod test {
                         processes:                        
                             - binary: /**/snap/test/**
                               user: duck
+                              forbidden: []
                               permitted:
                                 - start: 0000
                                   end:   0001
