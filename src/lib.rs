@@ -1,12 +1,10 @@
 pub mod config;
 
-#[cfg(feature = "ip_tables")]
-mod iptables;
-mod notify;
-mod serve;
+#[cfg(target_family = "unix")]
+pub mod unix;
+mod server;
 pub mod setup;
 pub mod types;
-pub mod uid_resolver;
 
 use std::{collections::HashMap, path::PathBuf, rc::Rc, sync::Arc, ops::Not};
 
@@ -14,10 +12,16 @@ use anyhow::Context;
 use config::manager::ConfigManager;
 use log::{debug, info, warn};
 use serde::Serialize;
+use server::Server;
 use typed_builder::TypedBuilder;
 use types::{AcceptedInterval, Domain, RejectedInterval, Username};
 
-use crate::{config::Binary, notify::notify, types::TimeOfDay, uid_resolver::Uid};
+use crate::{config::Binary, types::TimeOfDay};
+
+#[cfg(target_os = "linux")]
+use crate::unix::linux::notify::{ notify, Urgency };
+#[cfg(target_family = "unix")]
+use crate::unix::uid_resolver::{self, Uid};
 
 #[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
@@ -51,25 +55,25 @@ pub struct KeepItFocused {
     /// Runtime options.
     options: Options,
 
+    /// A component in charge of (re)loading the configuration
     config: ConfigManager,
 
     /// A minimal HTTP server running on its own thread to serve web filters to web browsers.
-    server: Arc<serve::Server>,
+    server: Arc<Server>,
 }
 
 impl KeepItFocused {
     pub fn try_new(options: Options) -> Result<Self, anyhow::Error> {
         debug!("options: {:?}", options);
-        let server = Arc::new(serve::Server::new(HashMap::new(), options.port));
-        #[allow(unused_mut)]
         let mut me = Self {
-            server, // Data will be filled once we have executed `load_config()`.
+            server: Arc::new(Server::new(HashMap::new(), options.port)),
             config: ConfigManager::new(config::manager::Options {
                 main_config: options.main_config.clone(),
                 extensions_dir: options.extensions_dir.clone(),
             }),
             options,
         };
+        // Load the configuration and pass it to `server`
         me.tick()?;
         Ok(me)
     }
@@ -204,13 +208,14 @@ impl KeepItFocused {
             return Ok(());
         }
 
-        let now = TimeOfDay::from(chrono::Local::now());
+        let now = TimeOfDay::now();
         let processes = procfs::process::all_processes()
             .context("Could not access /proc, is this a Linux machine?")?;
 
         for proc in processes {
             // Examine process. We may not have access to all processes, e.g. if they're zombies,
-            // or being killed while we look, etc. We don't really care.
+            // or being killed while we look, etc. We don't really care, just skip a process if we
+            // can't examine it.
             let Ok(proc) = proc else { continue };
             let Ok(uid) = proc.uid() else { continue };
             let uid = Uid(uid);
@@ -242,7 +247,7 @@ impl KeepItFocused {
                         if let Err(err) = notify(
                             user_config.user_name.as_str(),
                             &format!("{} will quit in {} minutes", exe.to_string_lossy(), minutes),
-                            notify::Urgency::Significant,
+                            Urgency::Significant,
                         ) {
                             warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                         }
@@ -256,7 +261,7 @@ impl KeepItFocused {
                             "{} is not permitted at this time, stopping it",
                             exe.to_string_lossy()
                         ),
-                        notify::Urgency::Significant,
+                        Urgency::Significant,
                     ) {
                         warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                     }

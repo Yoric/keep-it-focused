@@ -7,19 +7,23 @@ use std::{
 
 use anyhow::Context;
 use clap::{ArgAction, Parser, Subcommand};
-use keep_it_focused::{
-    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
-    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
-    uid_resolver::{Resolver, Uid},
-    KeepItFocused,
-};
 use log::{debug, info, warn, LevelFilter};
 use procfs::sys::kernel::random::uuid;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
+use keep_it_focused::{
+    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
+    types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
+    KeepItFocused,
+};
+
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
 const DEFAULT_EXTENSIONS_PATH: &str = "/tmp/keep-it-focused.d/";
 const DEFAULT_PORT: &str = "7878";
+
+#[cfg(target_family="unix")]
+use keep_it_focused::unix::uid_resolver::{Resolver, Uid};
+
 
 #[derive(Subcommand, Debug)]
 enum Command {

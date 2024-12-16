@@ -190,6 +190,10 @@ let InterdictionManager = {
         return this._interdictionsByDomain
     },
 
+    // Recompute the list of offending urls.
+    //
+    // They typically look like `*://*.{domain name}/*`, to catch all accesses
+    // to offending domain and subdomains.
     urlFilters() {
         if (!this._urlFilters) {
             browser.tabs.onUpdated.removeListener(this._tabListener);

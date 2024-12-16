@@ -10,24 +10,37 @@ use anyhow::{anyhow, Context};
 
 #[allow(unused)]
 use log::{debug, info, trace, warn};
-use procfs::process::FDTarget;
 
-use crate::uid_resolver::Uid;
+#[cfg(target_family="unix")]
+use crate::unix::uid_resolver::Uid;
+#[cfg(target_os="linux")]
+use crate::unix::linux::procfs::find_peer_owner;
 
+/// The pre-serialized data to serve.
+///
+/// We take the path of "almost static HTTP server", as it makes
+/// for a simpler data model.
 pub type Data = HashMap<Uid, String>;
 
 pub struct Server {
+    /// The pre-serialized data to serve.
     data: RwLock<Data>,
+
+    /// The port on which we serve.
     port: u16,
 }
 impl Server {
     pub fn new(data: Data, port: u16) -> Self {
-        debug!("serving data {:?}", data);
         Server {
             data: RwLock::new(data),
             port,
         }
     }
+
+    /// Start serving.
+    ///
+    /// Once serving is setup, this method will never return, except in case
+    /// of uncatchable error.
     pub fn serve_blocking(&self) -> Result<(), anyhow::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.port))
             .with_context(|| format!("Failed to acquire port {}", self.port))?;
@@ -46,16 +59,18 @@ impl Server {
         }
         Ok(())
     }
+
+    /// Replace the pre-serialized data.
     pub fn update_data(&self, data: Data) -> Result<(), anyhow::Error> {
         let mut lock = self
             .data
             .write()
             .map_err(|_| anyhow!("failed to acquire lock"))?;
-        debug!("updating data {:?}", data);
         *lock = data;
         Ok(())
     }
 
+    /// Respond to a HTTP request.
     fn handle_stream(&self, mut stream: TcpStream) -> Result<(), anyhow::Error> {
         let peer = stream
             .peer_addr()
@@ -73,50 +88,13 @@ impl Server {
         info!("received request from port: {}", peer.port());
 
         // Find the inode for this port.
-        let mut inode_local = None;
-        let tcp = procfs::net::tcp()
-            .unwrap_or_default()
-            .into_iter()
-            .chain(procfs::net::tcp6().unwrap_or_default());
-        for entry in tcp {
-            if entry.local_address == peer {
-                inode_local = Some(entry.inode);
-                break;
-            }
-        }
-        let Some(inode_local) = inode_local else {
-            return Err(anyhow!("failed to find local inode"));
-        };
-
-        // Find the process owning this inode.
-        let processes = procfs::process::all_processes().context("Could not access /proc")?;
-        let mut owner = None;
-        for process in processes {
-            let Ok(process) = process else { continue };
-            let Ok(exe) = process.exe() else { continue };
-            let Ok(fds) = process.fd() else { continue };
-            for fd in fds {
-                let Ok(fd) = fd else { continue };
-                if let FDTarget::Socket(inode) = fd.target {
-                    if inode_local == inode {
-                        debug!("found process {} for local inode", exe.display());
-                        let Ok(uid) = process.uid() else { continue };
-                        debug!("found owner {} for local inode", uid);
-                        owner = Some(uid);
-                        break;
-                    }
-                }
-            }
-        }
-        let Some(owner) = owner else {
-            return Err(anyhow!("failed to find owner"));
-        };
+        let owner = find_peer_owner(peer)?;
 
         let contents = self
             .data
             .read()
             .map_err(|_| anyhow!("couldn't acquire rwlock"))?
-            .get(&Uid(owner))
+            .get(&owner)
             .cloned()
             .unwrap_or_else(|| "{}".to_string());
         let length = contents.len();
