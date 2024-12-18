@@ -25,10 +25,10 @@ use crate::unix::uid_resolver::{self, Uid};
 
 #[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
-    user_name: Rc<Username>,
-    processes: Vec<(Binary, Vec<AcceptedInterval>)>,
-    ips: HashMap<Domain, Vec<RejectedInterval>>,
-    web: HashMap<Domain, Vec<AcceptedInterval>>,
+    pub user_name: Rc<Username>,
+    pub processes: Vec<(Binary, Vec<AcceptedInterval>)>,
+    pub ips: HashMap<Domain, Vec<RejectedInterval>>,
+    pub web: HashMap<Domain, Vec<AcceptedInterval>>,
 }
 impl UserInstructions {
     pub fn new(user_name: Rc<Username>) -> Self {

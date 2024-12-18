@@ -35,6 +35,13 @@ enum Command {
         user: Option<String>,
     },
 
+    Query {
+        user: String,
+
+        #[command(subcommand)]
+        kind: Kind,
+    },
+
     /// Run the daemon.
     ///
     /// For iptables, you'll need to be root.
@@ -257,6 +264,62 @@ fn main() -> Result<(), anyhow::Error> {
                 }
             }
         }
+        Command::Query { user, kind } => {
+            // Load entire config.
+            let mut configurator = ConfigManager::new(ConfigOptions {
+                main_config: args.main_config,
+                extensions_dir: args.extensions,
+            });
+            configurator.load_config().context("invalid config")?;
+
+            // Pick user config.
+            let mut resolver = Resolver::new();
+            let uid = resolver.resolve(&Username(user.clone()))?;
+            let Some(config) = configurator.config().today_per_user().get(&uid)
+            else {
+                info!("on this day, no config for user {user}");
+                return Ok(());
+            };
+
+            let now = TimeOfDay::now();
+            // Check domain/binary.
+            match kind {
+                Kind::Binary { binaries } => {
+                    'binaries: for path in binaries {
+                        for (binary, intervals) in &config.processes {
+                            if binary.matcher.is_match(&path) {
+                                for interval in intervals {
+                                    let Some(remaining) = interval.0.remaining(now)
+                                    else {
+                                        continue
+                                    };
+                                    info!("binary {path}: {} minutes remaining", remaining.as_millis() / 60_000);
+                                    continue 'binaries;
+                                }
+                            }
+                            info!("binary {path} currently forbidden");
+                        }
+                        info!("binary {path} currently has no rule");
+                    }
+                },
+                Kind::Domain { domains } => {
+                    'domains: for domain in domains {
+                        let Some(intervals) = config.web.get(&Domain(domain.clone())) else {
+                            info!("domain {domain} currently has no rule");
+                            continue 'domains
+                        };
+                        for interval in intervals {
+                            let Some(remaining) = interval.0.remaining(now)
+                            else {
+                                continue
+                            };
+                            info!("domain {domain}: {} minutes remaining", remaining.as_millis() / 60_000);
+                            continue 'domains;
+                        }
+                    }
+                }
+            }
+        },
         Command::Run {
             sleep_s,
             port,
