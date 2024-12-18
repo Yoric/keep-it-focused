@@ -414,6 +414,7 @@ pub struct AcceptedInterval(pub Interval);
 impl AcceptedInterval {
     /// Simplify a bunch of accepted intervals.
     pub fn simplify(mut intervals: Vec<AcceptedInterval>) -> Vec<AcceptedInterval> {
+        debug!("simplifying {:?}", intervals);
         intervals.sort_by_key(|interval| interval.0.start);
         let mut normalized: Vec<AcceptedInterval> = vec![];
         for interval in intervals {
@@ -426,6 +427,7 @@ impl AcceptedInterval {
             // Otherwise, append interval
             normalized.push(interval.clone());
         }
+        debug!("simplifying into {:?}", normalized);
         normalized
     }
 
@@ -444,9 +446,6 @@ impl AcceptedInterval {
         accepted: Vec<AcceptedInterval>,
         rejected: Vec<RejectedInterval>,
     ) -> Vec<AcceptedInterval> {
-        if rejected.is_empty() {
-            return accepted;
-        }
         let mut accepted = Self::simplify(accepted).into_iter().peekable();
         let mut rejected = RejectedInterval::simplify(rejected).into_iter().peekable();
         let mut committed = vec![];
@@ -498,12 +497,12 @@ impl AcceptedInterval {
         }
         // Copy everything else
         committed.extend(accepted);
-        committed
+        Self::simplify(committed)
     }
 }
 
 /// A difference between two unions of intervals.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct IntervalsDiff {
     pub accepted: Vec<AcceptedInterval>,
     pub rejected: Vec<RejectedInterval>,
@@ -608,9 +607,103 @@ impl RejectedInterval {
 
 #[cfg(test)]
 mod test {
+    use crate::types::*;
     use itertools::Itertools;
 
-    use crate::types::*;
+    #[test]
+    /// Check that subtraction actually normalizes even when there is nothing to subtract.
+    fn test_interval_sub_trivial() {
+        let intervals = vec![
+            Interval {
+                start: TimeOfDay {
+                    hours: 12,
+                    minutes: 00,
+                },
+                end: TimeOfDay {
+                    hours: 13,
+                    minutes: 40,
+                },
+            },
+            Interval {
+                start: TimeOfDay {
+                    hours: 18,
+                    minutes: 00,
+                },
+                end: TimeOfDay {
+                    hours: 20,
+                    minutes: 00,
+                },
+            },
+            Interval {
+                start: TimeOfDay {
+                    hours: 13,
+                    minutes: 36,
+                },
+                end: TimeOfDay {
+                    hours: 13,
+                    minutes: 51,
+                },
+            },
+            Interval {
+                start: TimeOfDay {
+                    hours: 13,
+                    minutes: 55,
+                },
+                end: TimeOfDay {
+                    hours: 14,
+                    minutes: 20,
+                },
+            },
+            Interval {
+                start: TimeOfDay {
+                    hours: 14,
+                    minutes: 15,
+                },
+                end: TimeOfDay {
+                    hours: 14,
+                    minutes: 30,
+                },
+            },
+        ];
+        let subtraction = IntervalsDiff {
+            accepted: intervals.into_iter().map(AcceptedInterval).collect_vec(),
+            rejected: vec![],
+        };
+        let simplified = IntervalsDiff::compute_accepted_intervals(vec![subtraction]);
+        assert_eq!(simplified, vec![
+            AcceptedInterval(Interval {
+                start: TimeOfDay {
+                    hours: 12,
+                    minutes: 00,
+                },
+                end: TimeOfDay {
+                    hours: 13,
+                    minutes: 51,
+                },
+            }),
+            AcceptedInterval(Interval {
+                start: TimeOfDay {
+                    hours: 13,
+                    minutes: 55,
+                },
+                end: TimeOfDay {
+                    hours: 14,
+                    minutes: 30,
+                },
+            }),
+            AcceptedInterval(Interval {
+                start: TimeOfDay {
+                    hours: 18,
+                    minutes: 00,
+                },
+                end: TimeOfDay {
+                    hours: 20,
+                    minutes: 00,
+                },
+            })
+        ]);
+    }
+
     #[test]
     fn test_interval_sub() {
         let diffs = vec![

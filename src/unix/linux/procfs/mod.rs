@@ -34,7 +34,11 @@ pub fn find_peer_owner(peer: SocketAddr) -> Result<Uid, anyhow::Error> {
             let Ok(fd) = fd else { continue };
             if let FDTarget::Socket(inode) = fd.target {
                 if inode_local == inode {
-                    debug!("found process {} for local inode, with owner {:?}", exe.display(), process.exe());
+                    debug!(
+                        "found process {} for local inode, with owner {:?}",
+                        exe.display(),
+                        process.exe()
+                    );
                     let Ok(uid) = process.uid() else { continue };
                     owner = Some(uid);
                     break;
@@ -44,6 +48,6 @@ pub fn find_peer_owner(peer: SocketAddr) -> Result<Uid, anyhow::Error> {
     }
     match owner {
         Some(owner) => Ok(Uid(owner)),
-        None => Err(anyhow!("No owner found")) 
+        None => Err(anyhow!("No owner found")),
     }
 }

@@ -11,10 +11,10 @@ use anyhow::{anyhow, Context};
 #[allow(unused)]
 use log::{debug, info, trace, warn};
 
-#[cfg(target_family="unix")]
-use crate::unix::uid_resolver::Uid;
-#[cfg(target_os="linux")]
+#[cfg(target_os = "linux")]
 use crate::unix::linux::procfs::find_peer_owner;
+#[cfg(target_family = "unix")]
+use crate::unix::uid_resolver::Uid;
 
 /// The pre-serialized data to serve.
 ///
