@@ -1,12 +1,12 @@
 pub mod config;
 
-#[cfg(target_family = "unix")]
-pub mod unix;
 mod server;
 pub mod setup;
 pub mod types;
+#[cfg(target_family = "unix")]
+pub mod unix;
 
-use std::{collections::HashMap, path::PathBuf, rc::Rc, sync::Arc, ops::Not};
+use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc};
 
 use anyhow::Context;
 use config::manager::ConfigManager;
@@ -19,7 +19,7 @@ use types::{AcceptedInterval, Domain, RejectedInterval, Username};
 use crate::{config::Binary, types::TimeOfDay};
 
 #[cfg(target_os = "linux")]
-use crate::unix::linux::notify::{ notify, Urgency };
+use crate::unix::linux::notify::{notify, Urgency};
 #[cfg(target_family = "unix")]
 use crate::unix::uid_resolver::{self, Uid};
 
@@ -209,6 +209,7 @@ impl KeepItFocused {
         }
 
         let now = TimeOfDay::now();
+        // FIXME: All of this should move to a Linux-specific module.
         let processes = procfs::process::all_processes()
             .context("Could not access /proc, is this a Linux machine?")?;
 
@@ -216,6 +217,12 @@ impl KeepItFocused {
             // Examine process. We may not have access to all processes, e.g. if they're zombies,
             // or being killed while we look, etc. We don't really care, just skip a process if we
             // can't examine it.
+            /*
+                       try:
+                           proc = proc.get()
+                       with:
+                           continue
+            */
             let Ok(proc) = proc else { continue };
             let Ok(uid) = proc.uid() else { continue };
             let uid = Uid(uid);
