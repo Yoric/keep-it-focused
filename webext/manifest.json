@@ -7,7 +7,7 @@
 		"url": "https://github.com/Yoric/"
 	},
 	"homepage_url": "https://github.com/Yoric/keep-it-focused",
-	"version": "0.2.8",
+	"version": "0.3.0",
 	"browser_specific_settings": {
 		"gecko": {
 		  "id": "keep-it-focused@yoric.xyz",
@@ -19,7 +19,7 @@
 	},
 	"background": {
 		"scripts": [
-			"background_script.js"
+			"keep_it_focused_bg.js"
 		]
 	},
 	"permissions": [

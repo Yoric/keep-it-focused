@@ -1,12 +1,12 @@
 pub mod config;
 
-#[cfg(target_family = "unix")]
-pub mod unix;
 mod server;
 pub mod setup;
 pub mod types;
+#[cfg(target_family = "unix")]
+pub mod unix;
 
-use std::{collections::HashMap, path::PathBuf, rc::Rc, sync::Arc, ops::Not};
+use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc};
 
 use anyhow::Context;
 use config::manager::ConfigManager;
@@ -19,16 +19,16 @@ use types::{AcceptedInterval, Domain, RejectedInterval, Username};
 use crate::{config::Binary, types::TimeOfDay};
 
 #[cfg(target_os = "linux")]
-use crate::unix::linux::notify::{ notify, Urgency };
+use crate::unix::linux::notify::{notify, Urgency};
 #[cfg(target_family = "unix")]
 use crate::unix::uid_resolver::{self, Uid};
 
 #[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
-    user_name: Rc<Username>,
-    processes: Vec<(Binary, Vec<AcceptedInterval>)>,
-    ips: HashMap<Domain, Vec<RejectedInterval>>,
-    web: HashMap<Domain, Vec<AcceptedInterval>>,
+    pub user_name: Rc<Username>,
+    pub processes: Vec<(Binary, Vec<AcceptedInterval>)>,
+    pub ips: HashMap<Domain, Vec<RejectedInterval>>,
+    pub web: HashMap<Domain, Vec<AcceptedInterval>>,
 }
 impl UserInstructions {
     pub fn new(user_name: Rc<Username>) -> Self {
@@ -63,7 +63,7 @@ pub struct KeepItFocused {
 }
 
 impl KeepItFocused {
-    pub fn try_new(options: Options) -> Result<Self, anyhow::Error> {
+    pub async fn try_new(options: Options) -> Result<Self, anyhow::Error> {
         debug!("options: {:?}", options);
         let mut me = Self {
             server: Arc::new(Server::new(HashMap::new(), options.port)),
@@ -74,11 +74,11 @@ impl KeepItFocused {
             options,
         };
         // Load the configuration and pass it to `server`
-        me.tick()?;
+        me.tick().await?;
         Ok(me)
     }
 
-    pub fn tick(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Load any change.
         let has_changes = match self.config.load_config() {
             Err(err) => {
@@ -93,6 +93,7 @@ impl KeepItFocused {
             let data = self.config.config().serialize_web();
             self.server
                 .update_data(data)
+                .await
                 .context("Failed to register data to serve, was the server stopped?")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
@@ -198,7 +199,7 @@ impl KeepItFocused {
 
     pub fn background_serve(&self) {
         let server = self.server.clone();
-        std::thread::spawn(move || server.serve_blocking());
+        tokio::task::spawn( async move { server.serve_blocking().await });
     }
 
     fn find_offending_processes(&self) -> Result<(), anyhow::Error> {
@@ -209,6 +210,7 @@ impl KeepItFocused {
         }
 
         let now = TimeOfDay::now();
+        // FIXME: All of this should move to a Linux-specific module.
         let processes = procfs::process::all_processes()
             .context("Could not access /proc, is this a Linux machine?")?;
 
@@ -216,6 +218,12 @@ impl KeepItFocused {
             // Examine process. We may not have access to all processes, e.g. if they're zombies,
             // or being killed while we look, etc. We don't really care, just skip a process if we
             // can't examine it.
+            /*
+                       try:
+                           proc = proc.get()
+                       with:
+                           continue
+            */
             let Ok(proc) = proc else { continue };
             let Ok(uid) = proc.uid() else { continue };
             let uid = Uid(uid);

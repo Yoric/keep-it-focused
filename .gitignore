@@ -1,4 +1,5 @@
 /target
 .env
-webext/
+node_modules/
 dist/keep-it-focused
+.amo-upload-uuid

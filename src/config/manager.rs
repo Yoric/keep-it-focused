@@ -1,5 +1,9 @@
 use std::{
-    collections::HashMap, ops::Not, path::{Path, PathBuf}, rc::Rc, time::{SystemTime, UNIX_EPOCH}
+    collections::HashMap,
+    ops::Not,
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
@@ -334,6 +338,7 @@ impl ConfigManager {
                 per_user.processes.push((binary, resolved));
             }
             for (domain, intervals) in user_entry.web {
+                debug!("domain {domain}: preparing to resolve intervals {intervals:?}");
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
                 debug!("domain {domain}: resolving intervals => {resolved:?}");
                 per_user.web.insert(domain, resolved);

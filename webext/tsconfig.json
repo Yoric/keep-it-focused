@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    // You have to explicitly set @types to get DefinitelyTyped type definitions
+    "typeRoots": ["node_modules/@types"],
+    "strict": true,
+    "lib": ["es2023"],
+    "target": "es2023",
+    "outFile": "keep_it_focused_bg.js",
+  },
+}

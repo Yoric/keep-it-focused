@@ -12,7 +12,10 @@ use procfs::sys::kernel::random::uuid;
 use systemd_journal_logger::{connected_to_journal, JournalLog};
 
 use keep_it_focused::{
-    config::{Binary, Config, Extension, ProcessFilter, WebFilter, manager::{ConfigManager, Options as ConfigOptions}},
+    config::{
+        manager::{ConfigManager, Options as ConfigOptions},
+        Binary, Config, Extension, ProcessFilter, WebFilter,
+    },
     types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
     KeepItFocused,
 };
@@ -21,16 +24,22 @@ const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
 const DEFAULT_EXTENSIONS_PATH: &str = "/tmp/keep-it-focused.d/";
 const DEFAULT_PORT: &str = "7878";
 
-#[cfg(target_family="unix")]
+#[cfg(target_family = "unix")]
 use keep_it_focused::unix::uid_resolver::{Resolver, Uid};
-
 
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Check the configuration for syntax.
     Check {
         /// If specified, display today's configuration for this user.
-        user: Option<String>
+        user: Option<String>,
+    },
+
+    Query {
+        user: String,
+
+        #[command(subcommand)]
+        kind: Kind,
     },
 
     /// Run the daemon.
@@ -207,7 +216,8 @@ struct Args {
     command: Command,
 }
 
-fn main() -> Result<(), anyhow::Error> {
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
     if connected_to_journal() {
         eprintln!("using journal log");
         JournalLog::new()
@@ -241,21 +251,78 @@ fn main() -> Result<(), anyhow::Error> {
                 main_config: args.main_config,
                 extensions_dir: args.extensions,
             });
-            configurator.load_config()
-                .context("invalid config")?;
+            configurator.load_config().context("invalid config")?;
             info!("config parsed, seems legit");
             if let Some(user) = user {
                 let mut resolver = Resolver::new();
                 let uid = resolver.resolve(&Username(user.clone()))?;
                 match configurator.config().today_per_user().get(&uid) {
                     None => info!("on this day, no config for user {user}"),
-                    Some(config) =>
-                        info!("today's config for {user}\n {}", serde_yaml::to_string(&config)
-                            .context("Failed to serialize")?)
-
+                    Some(config) => info!(
+                        "today's config for {user}\n {}",
+                        serde_yaml::to_string(&config).context("Failed to serialize")?
+                    ),
                 }
             }
         }
+        Command::Query { user, kind } => {
+            // Load entire config.
+            let mut configurator = ConfigManager::new(ConfigOptions {
+                main_config: args.main_config,
+                extensions_dir: args.extensions,
+            });
+            configurator.load_config().context("invalid config")?;
+
+            // Pick user config.
+            let mut resolver = Resolver::new();
+            let uid = resolver.resolve(&Username(user.clone()))?;
+            let Some(config) = configurator.config().today_per_user().get(&uid)
+            else {
+                info!("on this day, no config for user {user}");
+                return Ok(());
+            };
+
+            let now = TimeOfDay::now();
+            // Check domain/binary.
+            match kind {
+                Kind::Binary { binaries } => {
+                    'binaries: for path in binaries {
+                        for (binary, intervals) in &config.processes {
+                            if binary.matcher.is_match(&path) {
+                                for interval in intervals {
+                                    let Some(remaining) = interval.0.remaining(now)
+                                    else {
+                                        continue
+                                    };
+                                    println!("binary {path}: {} minutes remaining", remaining.as_millis() / 60_000);
+                                    continue 'binaries;
+                                }
+                                println!("binary {path} currently forbidden");
+                                continue 'binaries;
+                            }
+                        }
+                        println!("binary {path} currently has no rule");
+                    }
+                },
+                Kind::Domain { domains } => {
+                    'domains: for domain in domains {
+                        let Some(intervals) = config.web.get(&Domain(domain.clone())) else {
+                            println!("domain {domain} currently has no rule");
+                            continue 'domains
+                        };
+                        for interval in intervals {
+                            let Some(remaining) = interval.0.remaining(now)
+                            else {
+                                continue
+                            };
+                            println!("domain {domain}: {} minutes remaining", remaining.as_millis() / 60_000);
+                            continue 'domains;
+                        }
+                        println!("domain {domain} currently forbidden");
+                    }
+                }
+            }
+        },
         Command::Run {
             sleep_s,
             port,
@@ -272,13 +339,14 @@ fn main() -> Result<(), anyhow::Error> {
                 main_config: args.main_config,
                 extensions_dir: args.extensions,
             })
+            .await
             .context("Failed to apply configuration")?;
             focuser.background_serve();
 
             loop {
                 info!("loop: {}", "sleeping");
                 thread::sleep(std::time::Duration::from_secs(sleep_s));
-                if let Err(err) = focuser.tick() {
+                if let Err(err) = focuser.tick().await {
                     warn!("problem during tick, skipping! {:?}", err);
                 }
             }
@@ -406,9 +474,11 @@ fn main() -> Result<(), anyhow::Error> {
                 main_config: temp_file.clone(),
                 extensions_dir: args.extensions,
             })
+            .await
             .context("Failed to launch checker")?;
             simulator
                 .tick()
+                .await
                 .context("Could not process change, rolling back")?;
 
             // 4. Finally, commit change.
@@ -432,12 +502,9 @@ fn main() -> Result<(), anyhow::Error> {
             let start = verb.start.unwrap_or(TimeOfDay::now());
             let end = match verb.minutes {
                 Some(duration) => TimeOfDay::from_minutes(TimeOfDay::now().as_minutes() + duration),
-                None => verb.end.unwrap_or(TimeOfDay::END)
+                None => verb.end.unwrap_or(TimeOfDay::END),
             };
-            let intervals = vec![Interval {
-                start,
-                end,
-            }];
+            let intervals = vec![Interval { start, end }];
             let (permitted, forbidden) = match verb {
                 Verb::Allow(_) => (intervals, vec![]),
                 Verb::Forbid(_) => (vec![], intervals),
