@@ -216,7 +216,8 @@ struct Args {
     command: Command,
 }
 
-fn main() -> Result<(), anyhow::Error> {
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
     if connected_to_journal() {
         eprintln!("using journal log");
         JournalLog::new()
@@ -293,19 +294,20 @@ fn main() -> Result<(), anyhow::Error> {
                                     else {
                                         continue
                                     };
-                                    info!("binary {path}: {} minutes remaining", remaining.as_millis() / 60_000);
+                                    println!("binary {path}: {} minutes remaining", remaining.as_millis() / 60_000);
                                     continue 'binaries;
                                 }
+                                println!("binary {path} currently forbidden");
+                                continue 'binaries;
                             }
-                            info!("binary {path} currently forbidden");
                         }
-                        info!("binary {path} currently has no rule");
+                        println!("binary {path} currently has no rule");
                     }
                 },
                 Kind::Domain { domains } => {
                     'domains: for domain in domains {
                         let Some(intervals) = config.web.get(&Domain(domain.clone())) else {
-                            info!("domain {domain} currently has no rule");
+                            println!("domain {domain} currently has no rule");
                             continue 'domains
                         };
                         for interval in intervals {
@@ -313,9 +315,10 @@ fn main() -> Result<(), anyhow::Error> {
                             else {
                                 continue
                             };
-                            info!("domain {domain}: {} minutes remaining", remaining.as_millis() / 60_000);
+                            println!("domain {domain}: {} minutes remaining", remaining.as_millis() / 60_000);
                             continue 'domains;
                         }
+                        println!("domain {domain} currently forbidden");
                     }
                 }
             }
@@ -336,13 +339,14 @@ fn main() -> Result<(), anyhow::Error> {
                 main_config: args.main_config,
                 extensions_dir: args.extensions,
             })
+            .await
             .context("Failed to apply configuration")?;
             focuser.background_serve();
 
             loop {
                 info!("loop: {}", "sleeping");
                 thread::sleep(std::time::Duration::from_secs(sleep_s));
-                if let Err(err) = focuser.tick() {
+                if let Err(err) = focuser.tick().await {
                     warn!("problem during tick, skipping! {:?}", err);
                 }
             }
@@ -470,9 +474,11 @@ fn main() -> Result<(), anyhow::Error> {
                 main_config: temp_file.clone(),
                 extensions_dir: args.extensions,
             })
+            .await
             .context("Failed to launch checker")?;
             simulator
                 .tick()
+                .await
                 .context("Could not process change, rolling back")?;
 
             // 4. Finally, commit change.

@@ -63,7 +63,7 @@ pub struct KeepItFocused {
 }
 
 impl KeepItFocused {
-    pub fn try_new(options: Options) -> Result<Self, anyhow::Error> {
+    pub async fn try_new(options: Options) -> Result<Self, anyhow::Error> {
         debug!("options: {:?}", options);
         let mut me = Self {
             server: Arc::new(Server::new(HashMap::new(), options.port)),
@@ -74,11 +74,11 @@ impl KeepItFocused {
             options,
         };
         // Load the configuration and pass it to `server`
-        me.tick()?;
+        me.tick().await?;
         Ok(me)
     }
 
-    pub fn tick(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Load any change.
         let has_changes = match self.config.load_config() {
             Err(err) => {
@@ -93,6 +93,7 @@ impl KeepItFocused {
             let data = self.config.config().serialize_web();
             self.server
                 .update_data(data)
+                .await
                 .context("Failed to register data to serve, was the server stopped?")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
@@ -198,7 +199,7 @@ impl KeepItFocused {
 
     pub fn background_serve(&self) {
         let server = self.server.clone();
-        std::thread::spawn(move || server.serve_blocking());
+        tokio::task::spawn( async move { server.serve_blocking().await });
     }
 
     fn find_offending_processes(&self) -> Result<(), anyhow::Error> {
