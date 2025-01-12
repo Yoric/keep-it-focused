@@ -276,8 +276,7 @@ async fn main() -> Result<(), anyhow::Error> {
             // Pick user config.
             let mut resolver = Resolver::new();
             let uid = resolver.resolve(&Username(user.clone()))?;
-            let Some(config) = configurator.config().today_per_user().get(&uid)
-            else {
+            let Some(config) = configurator.config().today_per_user().get(&uid) else {
                 info!("on this day, no config for user {user}");
                 return Ok(());
             };
@@ -290,11 +289,13 @@ async fn main() -> Result<(), anyhow::Error> {
                         for (binary, intervals) in &config.processes {
                             if binary.matcher.is_match(&path) {
                                 for interval in intervals {
-                                    let Some(remaining) = interval.0.remaining(now)
-                                    else {
-                                        continue
+                                    let Some(remaining) = interval.0.remaining(now) else {
+                                        continue;
                                     };
-                                    println!("binary {path}: {} minutes remaining", remaining.as_millis() / 60_000);
+                                    println!(
+                                        "binary {path}: {} minutes remaining",
+                                        remaining.as_millis() / 60_000
+                                    );
                                     continue 'binaries;
                                 }
                                 println!("binary {path} currently forbidden");
@@ -303,26 +304,28 @@ async fn main() -> Result<(), anyhow::Error> {
                         }
                         println!("binary {path} currently has no rule");
                     }
-                },
+                }
                 Kind::Domain { domains } => {
                     'domains: for domain in domains {
                         let Some(intervals) = config.web.get(&Domain(domain.clone())) else {
                             println!("domain {domain} currently has no rule");
-                            continue 'domains
+                            continue 'domains;
                         };
                         for interval in intervals {
-                            let Some(remaining) = interval.0.remaining(now)
-                            else {
-                                continue
+                            let Some(remaining) = interval.0.remaining(now) else {
+                                continue;
                             };
-                            println!("domain {domain}: {} minutes remaining", remaining.as_millis() / 60_000);
+                            println!(
+                                "domain {domain}: {} minutes remaining",
+                                remaining.as_millis() / 60_000
+                            );
                             continue 'domains;
                         }
                         println!("domain {domain} currently forbidden");
                     }
                 }
             }
-        },
+        }
         Command::Run {
             sleep_s,
             port,

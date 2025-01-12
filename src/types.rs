@@ -670,38 +670,41 @@ mod test {
             rejected: vec![],
         };
         let simplified = IntervalsDiff::compute_accepted_intervals(vec![subtraction]);
-        assert_eq!(simplified, vec![
-            AcceptedInterval(Interval {
-                start: TimeOfDay {
-                    hours: 12,
-                    minutes: 00,
-                },
-                end: TimeOfDay {
-                    hours: 13,
-                    minutes: 51,
-                },
-            }),
-            AcceptedInterval(Interval {
-                start: TimeOfDay {
-                    hours: 13,
-                    minutes: 55,
-                },
-                end: TimeOfDay {
-                    hours: 14,
-                    minutes: 30,
-                },
-            }),
-            AcceptedInterval(Interval {
-                start: TimeOfDay {
-                    hours: 18,
-                    minutes: 00,
-                },
-                end: TimeOfDay {
-                    hours: 20,
-                    minutes: 00,
-                },
-            })
-        ]);
+        assert_eq!(
+            simplified,
+            vec![
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 12,
+                        minutes: 00,
+                    },
+                    end: TimeOfDay {
+                        hours: 13,
+                        minutes: 51,
+                    },
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 13,
+                        minutes: 55,
+                    },
+                    end: TimeOfDay {
+                        hours: 14,
+                        minutes: 30,
+                    },
+                }),
+                AcceptedInterval(Interval {
+                    start: TimeOfDay {
+                        hours: 18,
+                        minutes: 00,
+                    },
+                    end: TimeOfDay {
+                        hours: 20,
+                        minutes: 00,
+                    },
+                })
+            ]
+        );
     }
 
     #[test]

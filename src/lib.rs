@@ -199,7 +199,7 @@ impl KeepItFocused {
 
     pub fn background_serve(&self) {
         let server = self.server.clone();
-        tokio::task::spawn( async move { server.serve_blocking().await });
+        tokio::task::spawn(async move { server.serve_blocking().await });
     }
 
     fn find_offending_processes(&self) -> Result<(), anyhow::Error> {
@@ -218,12 +218,6 @@ impl KeepItFocused {
             // Examine process. We may not have access to all processes, e.g. if they're zombies,
             // or being killed while we look, etc. We don't really care, just skip a process if we
             // can't examine it.
-            /*
-                       try:
-                           proc = proc.get()
-                       with:
-                           continue
-            */
             let Ok(proc) = proc else { continue };
             let Ok(uid) = proc.uid() else { continue };
             let uid = Uid(uid);

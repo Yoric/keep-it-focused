@@ -1,14 +1,15 @@
-use std::{
-    collections::HashMap,
-    ops::Not, sync::Arc, time::Duration,
-};
+use std::{collections::HashMap, ops::Not, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context};
 
 use lazy_regex::lazy_regex;
 #[allow(unused)]
 use log::{debug, info, trace, warn};
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt, BufReader}, net::{TcpListener, TcpStream}, sync::{Notify, RwLock}};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
+    sync::{Notify, RwLock},
+};
 
 #[cfg(target_os = "linux")]
 use crate::unix::linux::procfs::find_peer_owner;
@@ -63,7 +64,8 @@ impl Server {
                 // We're responding slowly, by design, so we want each stream to run in its own task.
                 if let Err(err) = Self::handle_stream(stream, data.as_ref()).await {
                     warn!("stream handling error {}", err);
-            }});
+                }
+            });
         }
         Ok(())
     }
@@ -71,11 +73,7 @@ impl Server {
     /// Replace the pre-serialized data.
     pub async fn update_data(&self, data: HashMap<Uid, String>) -> Result<(), anyhow::Error> {
         {
-            let mut lock = self
-                .data
-                .store
-                .write()
-                .await;
+            let mut lock = self.data.store.write().await;
             *lock = data;
         }
         self.data.notify.notify_waiters();
@@ -108,7 +106,7 @@ impl Server {
         let url = loop {
             debug!("reading to string");
             line.clear();
-            tokio::select!{
+            tokio::select! {
                 result = reader.read_line(&mut line) => {
                     result?;
                     let Some(captures) = get_re.captures(&line) else {
@@ -136,7 +134,7 @@ impl Server {
                 _ = tokio::time::sleep(Duration::from_secs(WAIT_TIMEOUT_SEC)) => {
                     debug!("timeout exceeded, responding");
                 }
-            };    
+            };
         }
 
         // Respond with the latest version.

@@ -5,6 +5,6 @@
     "strict": true,
     "lib": ["es2023"],
     "target": "es2023",
-    "outFile": "keep_it_focused_bg.js",
-  },
+    "outFile": "keep_it_focused_bg.js"
+  }
 }

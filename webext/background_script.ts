@@ -50,7 +50,7 @@ class TimeManager {
         // If `interval.start` is in the past, this will never be triggered.
         let keyEnter = authorization.keyEnter();
         this._authorizationsByAlarmKeyEnter.set(keyEnter, authorization);
-        console.debug("keep-it-focused", "TimeManager", "creating enter alarm for", authorization.domain, authorization.interval.start);
+        console.debug("keep-it-focused", "TimeManager", "creating enter-authorized-interval alarm for", authorization.domain, authorization.interval.start);
         browser.alarms.create(keyEnter, {
             when: authorization.interval.start.valueOf(),
         });
@@ -61,7 +61,7 @@ class TimeManager {
         let keyExit = authorization.keyExit();
         let warnMeAtTS = authorization.interval.end.valueOf() - 1000 * 60 * 5;
         this._authorizationsByAlarmKeyExit.set(keyExit, authorization);
-        console.debug("keep-it-focused", "TimeManager", "creating startup alarm for", authorization.domain, authorization.interval.start);
+        console.debug("keep-it-focused", "TimeManager", "creating  exit-authorized-interval alarm for", authorization.domain, authorization.interval.start);
         browser.alarms.create(keyExit, {
             when: warnMeAtTS,
             periodInMinutes: 1
@@ -119,12 +119,12 @@ class TimeManager {
         // allow/forbid/warn for it after all. For this reason, we look at all the currently valid intervals for
         // the domain and we use them to determine our policy.
         let now = new Date();
-        let remains;
+        let remains: number | false = false; // Initialized to `false` in case `intervals` is empty.
         for (let interval of intervals.keys()) {
             if (remains = interval.contains(now)) {
                 break;
             }
-        }
+        }    
 
         // Should we display a warning?
         let tabs = browser.tabs.query({
@@ -138,7 +138,9 @@ class TimeManager {
 
             console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloading tabs");
             for (let tab of await tabs) {
-                // Browser away, in the background.
+                // Let's remove the offending tab.
+                //
+                // No need to await the Promise.
                 if (tab.id) {
                     browser.tabs.update(tab.id, {
                         url: "about:blank"

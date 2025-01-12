@@ -7,13 +7,13 @@
 		"url": "https://github.com/Yoric/"
 	},
 	"homepage_url": "https://github.com/Yoric/keep-it-focused",
-	"version": "0.3.0",
+	"version": "0.3.2",
 	"browser_specific_settings": {
 		"gecko": {
 		  "id": "keep-it-focused@yoric.xyz",
-		  "strict_min_version": "100.0"
+		  "strict_min_version": "127.0"
 		}
-	  },
+	},
 	"icons": {
 		"64": "icons/icon.png"
 	},
