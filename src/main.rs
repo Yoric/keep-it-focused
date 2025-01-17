@@ -442,7 +442,7 @@ async fn main() -> Result<(), anyhow::Error> {
             match verb.as_ref().kind {
                 Kind::Domain { ref domains } => {
                     for day in &verb.days {
-                        let day_config = entry.0.entry(*day).or_default();
+                        let day_config = entry.entry(*day).or_default();
                         let DayConfig::Instructions { ref mut web, .. } = day_config else {
                             return Err(anyhow!(
                                 "instructions for {day} are a copy from another day"
@@ -459,7 +459,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
                 Kind::Binary { ref binaries } => {
                     for day in &verb.days {
-                        let day_config = entry.0.entry(*day).or_default();
+                        let day_config = entry.entry(*day).or_default();
                         let DayConfig::Instructions {
                             ref mut processes, ..
                         } = day_config

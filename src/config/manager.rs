@@ -17,7 +17,7 @@ use crate::{
     UserInstructions,
 };
 
-use super::{DayConfig, ResolvedDayConfig};
+use super::ResolvedDayConfig;
 
 #[derive(Debug)]
 struct CacheEntry {
@@ -153,19 +153,8 @@ impl ConfigManager {
         has_changes |= self.fetch_and_cache(self.options.main_config.clone(), false, |file| {
             let config: Config = serde_yaml::from_reader(file).context("Invalid format")?;
             let mut result = HashMap::new();
-            for (user, mut week) in config.users {
-                let mut day = today;
-                let mut found = None;
-                while let Some(day_config) = week.0.remove(&day) {
-                    match day_config {
-                        DayConfig::Copy { like } => day = like,
-                        DayConfig::Instructions { processes, ip, web } => {
-                            found = Some(ResolvedDayConfig { processes, ip, web });
-                            break;
-                        }
-                    }
-                }
-                if let Some(day_config) = found {
+            for (user, week) in config.users {
+                if let Some(day_config) = week.resolve(today) {
                     debug!(
                         "processing user {user} - we have a rule for today {:?}",
                         day_config

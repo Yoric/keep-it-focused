@@ -1,7 +1,7 @@
 pub mod manager;
 
 use core::fmt;
-use std::{collections::HashMap, fmt::Display, hash::Hash, path::PathBuf};
+use std::{collections::{hash_map::Entry, HashMap}, fmt::Display, hash::Hash, path::PathBuf};
 
 use crate::types::{DayOfWeek, Domain, Interval, Username};
 use anyhow::anyhow;
@@ -183,7 +183,36 @@ pub struct ResolvedDayConfig {
 }
 
 #[derive(Deserialize, Serialize, Default, Debug)]
-pub struct Week(pub HashMap<DayOfWeek, DayConfig>);
+pub struct Week(HashMap<DayOfWeek, DayConfig>);
+
+impl Week {
+    pub fn entry(&mut self, day: DayOfWeek) -> Entry<'_,  DayOfWeek, DayConfig> {
+        self.0.entry(day)
+    }
+    pub fn resolve(&self, day: DayOfWeek)  -> Option<ResolvedDayConfig> {
+        let mut visit = day;
+        let mut visited = [false; 7];
+        while let Some(config) = self.0.get(&visit) {
+            visited[visit.index()] = true;
+            match config {
+                DayConfig::Instructions { processes, ip, web } => return Some(ResolvedDayConfig {
+                    processes: processes.clone(),
+                    ip: ip.clone(),
+                    web: web.clone(),
+                }),
+                DayConfig::Copy { like } if visited[like.index()] => {
+                    // There's a cycle!
+                    break;
+                }
+                DayConfig::Copy { like } => {
+                    visit = *like;
+                }
+            }
+        }
+        None
+    }
+}
+
 
 /// The contents of /etc/keep-it-focused.yaml, covering the entire week.
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -202,10 +231,7 @@ pub struct Extension {
 mod test {
     use std::path::PathBuf;
 
-    use crate::{
-        config::{DayConfig, ResolvedDayConfig},
-        types::{TimeOfDay, Username},
-    };
+    use crate::types::{TimeOfDay, Username};
 
     use super::{Config, DayOfWeek};
 
@@ -224,6 +250,8 @@ mod test {
                         like: monday
                     WEDanythinggoes:
                         like: monday
+                    thur:
+                        processes: []
                 mouse:
                     monday:
                         processes:                        
@@ -237,31 +265,15 @@ mod test {
                                   end:   0003
         "#;
         let mut config: Config = serde_yaml::from_str(sample).expect("invalid config");
-        let mut mickey = config
+        let mickey = config
             .users
             .remove(&Username("mickey".to_string()))
             .expect("missing user mickey");
-        let mickey_monday = mickey.0.remove(&DayOfWeek::monday()).unwrap();
-        let mickey_monday = match mickey_monday {
-            DayConfig::Instructions { web, processes, ip } => {
-                ResolvedDayConfig { web, processes, ip }
-            }
-            _ => panic!(),
-        };
-        let mickey_tuesday = mickey.0.remove(&DayOfWeek::tuesday()).unwrap();
-        let mickey_tuesday = match mickey_tuesday {
-            DayConfig::Instructions { web, processes, ip } => {
-                ResolvedDayConfig { web, processes, ip }
-            }
-            _ => panic!(),
-        };
-        let mickey_wed = mickey.0.remove(&DayOfWeek::wednesday()).unwrap();
-        let mickey_wed = match mickey_wed {
-            DayConfig::Instructions { web, processes, ip } => {
-                ResolvedDayConfig { web, processes, ip }
-            }
-            _ => panic!(),
-        };
+        let mickey_monday = mickey.resolve(DayOfWeek::monday()).expect("Could not resolve monday");
+        let mickey_tuesday = mickey.resolve(DayOfWeek::tuesday()).expect("Could not resolve tuesday");
+        let mickey_wed = mickey.resolve(DayOfWeek::wednesday()).expect("Could not resolve wednesday");
+        let mickey_thur = mickey.resolve(DayOfWeek::thursday()).expect("Could not resolve thursday");
+        let _mickey_fri = mickey.resolve(DayOfWeek::friday()).map(|_| panic!("We should not have any content for friday"));
         assert_eq!(mickey_monday.processes.len(), 1);
         assert_eq!(
             mickey_monday.processes[0].binary.path,
@@ -277,6 +289,7 @@ mod test {
         );
         assert_eq!(mickey_monday, mickey_tuesday);
         assert_eq!(mickey_wed, mickey_tuesday);
-        assert_eq!(mickey.0.len(), 3);
+        assert!(mickey_monday != mickey_thur);
+        assert_eq!(mickey.0.len(), 4);
     }
 }
