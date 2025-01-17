@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use clap::{ArgAction, Parser, Subcommand};
 use log::{debug, info, warn, LevelFilter};
 use procfs::sys::kernel::random::uuid;
@@ -14,7 +14,7 @@ use systemd_journal_logger::{connected_to_journal, JournalLog};
 use keep_it_focused::{
     config::{
         manager::{ConfigManager, Options as ConfigOptions},
-        Binary, Config, Extension, ProcessFilter, WebFilter,
+        Binary, Config, DayConfig, Extension, ProcessFilter, WebFilter,
     },
     types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
     KeepItFocused,
@@ -443,8 +443,13 @@ async fn main() -> Result<(), anyhow::Error> {
                 Kind::Domain { ref domains } => {
                     for day in &verb.days {
                         let day_config = entry.0.entry(*day).or_default();
+                        let DayConfig::Instructions { ref mut web, .. } = day_config else {
+                            return Err(anyhow!(
+                                "instructions for {day} are a copy from another day"
+                            ));
+                        };
                         for domain in domains {
-                            day_config.web.push(WebFilter {
+                            web.push(WebFilter {
                                 domain: Domain(domain.clone()),
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),
@@ -455,9 +460,17 @@ async fn main() -> Result<(), anyhow::Error> {
                 Kind::Binary { ref binaries } => {
                     for day in &verb.days {
                         let day_config = entry.0.entry(*day).or_default();
+                        let DayConfig::Instructions {
+                            ref mut processes, ..
+                        } = day_config
+                        else {
+                            return Err(anyhow!(
+                                "instructions for {day} are a copy from another day"
+                            ));
+                        };
                         for path in binaries {
                             let binary = Binary::try_new(path.as_ref())?;
-                            day_config.processes.push(ProcessFilter {
+                            processes.push(ProcessFilter {
                                 binary: binary.clone(),
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),

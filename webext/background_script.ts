@@ -105,6 +105,29 @@ class TimeManager {
         await ruleManager.flush();
     }
 
+    /**
+     * Recheck all domains.
+     * 
+     * This is useful if e.g. the computer emerges from sleep and we may have missed
+     * alarms.
+     */
+    async checkAllDomains() {
+        console.log("keep-it-focused", "TimeManager", "rechecking");
+        for (let domain of this._authorizationsByDomain.keys()) {
+            console.log("keep-it-focused", "TimeManager", "rechecking", "domain", domain);
+            await this._checkDomain(domain);
+        }
+    }
+
+    /**
+     * Check a single domain.
+     * 
+     * If any tab is currently visiting the domain and the domain is about to be forbidden, warn the user.
+     * If any tab is currently visiting the domain and the domain is forbidden, navigate to about:home.
+     * 
+     * @param domain 
+     * @returns 
+     */
     async _checkDomain(domain: string) {
         console.debug("keep-it-focused", "TimeManager", "_checkDomain", "checking whether", domain, "is permitted");
         let intervals = this._authorizationsByDomain.get(domain);
@@ -136,15 +159,21 @@ class TimeManager {
             console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden");
             ruleManager.forbidDomain(domain);
 
-            console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloading tabs");
+            console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloading", (await tabs).length, "tabs");
             for (let tab of await tabs) {
                 // Let's remove the offending tab.
                 //
                 // No need to await the Promise.
-                if (tab.id) {
-                    browser.tabs.update(tab.id, {
+                let id = tab.id;
+                if (id) {
+                    console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloading tab", id);
+                    browser.tabs.update(id, {
                         url: "about:blank"
+                    }).then(() => {
+                        console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloaded tab", id);
                     });
+                } else {
+                    console.warn("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is now forbidden", "unloading tab", "tab doesn't have an id", tab);
                 }
             }
 
@@ -184,7 +213,7 @@ class TimeManager {
             console.debug("keep-it-focused", "TimeManager", "_checkDomain", domain, "domain is currently permitted", "displaying warning", message);
             browser.notifications.create({
                 type: "progress",
-                title: "Keep it Focused",
+                title: "Let's take a break",
                 message,
                 progress,
             });
@@ -283,7 +312,7 @@ class RuleManager {
             }
         }
         // Compute an inital (empty) list of url filters.
-        this.urlFilters();
+        this.updateURLFilters();
     }
 
     async _fetchSessionRules(): Promise<browser.declarativeNetRequest.Rule[]> {
@@ -341,6 +370,7 @@ class RuleManager {
             this._currentRulesByDomain = this._computeRulesByDomain(this._currentRules);
             console.log("keep-it-focused", "RuleManager", "rules after flush", "=>", this._currentRules);
         }
+        this.updateURLFilters();
     }
 
     async unloadTab(tab: browser.tabs.Tab) {
@@ -359,7 +389,7 @@ class RuleManager {
     //
     // They typically look like `*://*.{domain name}/*`, to catch all accesses
     // to offending domain and subdomains.
-    urlFilters() {
+    updateURLFilters() {
         if (!this._urlFilters) {
             browser.tabs.onUpdated.removeListener(this._tabListener);
             this._urlFilters = [...this._currentRulesByDomain.keys()]
@@ -377,33 +407,13 @@ class RuleManager {
         return this._urlFilters
     }
 
-    _tabListener(tabId: number, change: browser.tabs.ChangeInfo, tab: browser.tabs.Tab): void {
+    async _tabListener(tabId: number, change: browser.tabs.ChangeInfo, tab: browser.tabs.Tab): Promise<void> {
         // Block from navigating to a forbidden URL.
         console.debug("keep-it-focused", "RuleManager", "tab attempting to navigate to unwanted url", change, tab);
-        browser.tabs.update(tabId, {
+        await browser.tabs.update(tabId, {
             url: "about:blank"
         })
     }
-
-    // Return the list of {tab} for tabs currently visiting a forbidden domain.
-    async findOffendingTabs() {
-        let urlFilters = this.urlFilters();
-        console.debug("keep-it-focused", "RuleManager", "checking for offending tabs", urlFilters);
-        if (urlFilters.length == 0) {
-            return []
-        }
-        let currentTabs = await browser.tabs.query({
-            url: urlFilters
-        });
-        console.debug("keep-it-focused", "RuleManager", "offending tabs", currentTabs);
-        if (currentTabs.length > 0) {
-            console.log("keep-it-focused", "RuleManager", "found offending tabs", currentTabs);
-        } else {
-            console.debug("keep-it-focused", "RuleManager", "no offending tabs");
-        }
-        return [...currentTabs.map((tab) => ({ tab }))];
-    }
-
 }
 const ruleManager = new RuleManager();
 
@@ -660,6 +670,14 @@ browser.runtime.onSuspend.addListener(async () => {
     console.log("keep-it-focused", "suspend", "preparing");
     configManager.suspend();
 })
+browser.idle.onStateChanged.addListener((state) => {
+    console.log("keep-it-focused", "state changed", state);
+    if (state == "active") {
+        // We're coming back into activity, from e.g. suspended computer.
+        // We may have missed alarms.
+        timeManager.checkAllDomains();
+    }
+});
 
 
 declare namespace console {
@@ -683,6 +701,14 @@ declare namespace browser {
         }
         function getSessionRules(filter?: { ruleIds?: number[] }): Promise<Rule[]>
         function updateSessionRules(options: {addRules?: declarativeNetRequest.Rule[], removeRuleIds?: number[]}): Promise<void>
+    }
+    namespace idle {
+        type IdleState = "active" | "idle" | "locked";
+        namespace onStateChanged {
+            function addListener(cb: (state: IdleState) => void): void;
+            function removeListener(cb: (state: IdleState) => void): void;
+            function hasListener(cb: (state: IdleState) => void): boolean;
+        }
     }
     namespace tabs {
         class Tab {

@@ -1,9 +1,8 @@
 use std::{
     collections::HashMap,
-    ops::Not,
     path::{Path, PathBuf},
     rc::Rc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 
 use anyhow::Context;
@@ -13,25 +12,23 @@ use log::{debug, info, warn};
 
 use crate::{
     config::{Binary, Config, Extension},
-    types::{
-        is_today, AcceptedInterval, DayOfWeek, Domain, IntervalsDiff, RejectedInterval, Username,
-    },
+    types::{AcceptedInterval, DayOfWeek, Domain, IntervalsDiff, RejectedInterval, Username},
     uid_resolver::{self, Uid},
     UserInstructions,
 };
 
-use super::DayConfig;
+use super::{DayConfig, ResolvedDayConfig};
 
 #[derive(Debug)]
 struct CacheEntry {
     /// When the file was last changed and read.
-    latest_update: SystemTime,
+    latest_update: DateTime<Local>,
 
     /// Whtn the file was created
-    creation_date: SystemTime,
+    creation_date: DateTime<Local>,
 
     /// Contents last read from that file.
-    config: HashMap<Username, DayConfig>,
+    config: HashMap<Username, ResolvedDayConfig>,
 }
 
 pub struct Options {
@@ -64,8 +61,8 @@ impl Precompiled {
 }
 
 pub struct ConfigManager {
-    /// A compiled instance of the configuration, collated from all the currently valid configuraiton
-    /// files.
+    /// A compiled instance of the configuration for the day, collated from all the currently
+    /// valid configuraiton files.
     config: Precompiled,
 
     /// A cache from configuration files -> entries.
@@ -97,14 +94,17 @@ impl ConfigManager {
         read: F,
     ) -> Result<bool, anyhow::Error>
     where
-        F: FnOnce(std::fs::File) -> Result<HashMap<Username, DayConfig>, anyhow::Error>,
+        F: FnOnce(std::fs::File) -> Result<HashMap<Username, ResolvedDayConfig>, anyhow::Error>,
     {
         let metadata = std::fs::metadata(&path)
             .with_context(|| format!("could not access configuration at {}", path.display()))?;
-        let latest_update = metadata
-            .modified()
-            .with_context(|| format!("no latest modification time for {}", path.display()))?;
-        if today_only && is_today(latest_update).not() {
+        let latest_update = DateTime::<Local>::from(
+            metadata
+                .modified()
+                .with_context(|| format!("no latest modification time for {}", path.display()))?,
+        );
+        let now = Local::now();
+        if today_only && latest_update.num_days_from_ce() != now.num_days_from_ce() {
             // This file has been modified before today, so it's obsolete, remove from cache.
             debug!(
                 "File {} was modified before today, removing from cache and disk",
@@ -124,11 +124,13 @@ impl ConfigManager {
             .cache
             .entry(path.clone())
             .or_insert_with(|| CacheEntry {
-                latest_update: UNIX_EPOCH,
-                creation_date,
+                latest_update: DateTime::<Local>::from(UNIX_EPOCH),
+                creation_date: DateTime::<Local>::from(creation_date),
                 config: HashMap::default(),
             });
-        if latest_update <= entry.latest_update {
+        if latest_update <= entry.latest_update
+            && latest_update.num_days_from_ce() == now.num_days_from_ce()
+        {
             // No change, keep cache.
             return Ok(false);
         }
@@ -152,7 +154,18 @@ impl ConfigManager {
             let config: Config = serde_yaml::from_reader(file).context("Invalid format")?;
             let mut result = HashMap::new();
             for (user, mut week) in config.users {
-                if let Some(day_config) = week.0.remove(&today) {
+                let mut day = today;
+                let mut found = None;
+                while let Some(day_config) = week.0.remove(&day) {
+                    match day_config {
+                        DayConfig::Copy { like } => day = like,
+                        DayConfig::Instructions { processes, ip, web } => {
+                            found = Some(ResolvedDayConfig { processes, ip, web });
+                            break;
+                        }
+                    }
+                }
+                if let Some(day_config) = found {
                     debug!(
                         "processing user {user} - we have a rule for today {:?}",
                         day_config
@@ -169,7 +182,7 @@ impl ConfigManager {
             if has_changes { "changed" } else { "unchanged" }
         );
 
-        // 2. Load other files from the directory, ignoring any error
+        // 2. Load other files from the directory, skipping in case of error
         // (along the way, we purge from the cache directory files that are now old).
         info!("reading config: loading extensions");
         match std::fs::read_dir(&self.options.extensions_dir) {
@@ -217,8 +230,10 @@ impl ConfigManager {
         // 3. Purge from memory any file that hasn't been modified today (except for the main file).
         debug!("reading config: purging old content");
         let before = self.cache.len();
+        let now = Local::now();
         self.cache.retain(|path, entry| {
-            is_today(entry.latest_update) || path == &self.options.main_config
+            entry.latest_update.num_days_from_ce() == now.num_days_from_ce()
+                || path == &self.options.main_config
         });
         let after = self.cache.len();
         if after != before {
@@ -244,7 +259,7 @@ impl ConfigManager {
     /// Resolve the cache
     ///
     /// - restrict to the current day of the week;
-    /// - restrict to
+    /// - resolve `like` days.
     fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]

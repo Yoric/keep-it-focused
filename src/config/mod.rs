@@ -1,7 +1,7 @@
 pub mod manager;
 
 use core::fmt;
-use std::{collections::HashMap, fmt::Display, hash::Hash, ops::Not, path::PathBuf};
+use std::{collections::HashMap, fmt::Display, hash::Hash, path::PathBuf};
 
 use crate::types::{DayOfWeek, Domain, Interval, Username};
 use anyhow::anyhow;
@@ -129,9 +129,9 @@ pub struct WebFilter {
     pub forbidden: Vec<Interval>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
-enum DayConfigParser {
+pub enum DayConfig {
     Copy {
         /// Copy the configuration of another day of the week.
         like: DayOfWeek,
@@ -155,83 +155,35 @@ enum DayConfigParser {
         web: Vec<WebFilter>,
     },
 }
+impl Default for DayConfig {
+    fn default() -> Self {
+        DayConfig::Instructions {
+            processes: vec![],
+            ip: vec![],
+            web: vec![],
+        }
+    }
+}
 
-#[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
-pub struct DayConfig {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Default)]
+pub struct ResolvedDayConfig {
+    /// Block certain processes during given time periods.
     pub processes: Vec<ProcessFilter>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Block certain IPs during given time periods.
+    ///
+    /// Note: This doesn't work with e.g. youtube.com, as they
+    /// load-balance between millions of IPs.
     pub ip: Vec<WebFilter>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Block certain domains during given time periods.
+    ///
+    /// Note: This requires the companion browser extension.
     pub web: Vec<WebFilter>,
 }
 
-#[derive(Serialize, Default, Debug)]
+#[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Week(pub HashMap<DayOfWeek, DayConfig>);
-
-impl<'de> Deserialize<'de> for Week {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{Error, Unexpected};
-        trace!("attempting to parse week");
-        let mut parse_map = HashMap::<DayOfWeek, DayConfigParser>::deserialize(deserializer)?;
-        let mut build_map = HashMap::<DayOfWeek, DayConfig>::new();
-
-        trace!("attempting to normalize week");
-        // Let's be a bit hackish here. As there are exactly 7 per week, we need at most 7 steps to flatten any reference.
-        for _ in 0..7 {
-            for day in [
-                DayOfWeek::monday(),
-                DayOfWeek::tuesday(),
-                DayOfWeek::wednesday(),
-                DayOfWeek::thursday(),
-                DayOfWeek::friday(),
-                DayOfWeek::saturday(),
-                DayOfWeek::sunday(),
-            ] {
-                match parse_map.get(&day) {
-                    None => continue,
-                    Some(DayConfigParser::Copy { like: other }) => {
-                        // Attempt to resolve.
-                        let Some(d) = build_map.get(other) else {
-                            continue;
-                        };
-                        build_map.insert(
-                            day,
-                            DayConfig {
-                                processes: d.processes.clone(),
-                                ip: d.ip.clone(),
-                                web: d.web.clone(),
-                            },
-                        );
-                    }
-                    Some(DayConfigParser::Instructions { processes, ip, web }) => {
-                        build_map.insert(
-                            day,
-                            DayConfig {
-                                processes: processes.clone(),
-                                ip: ip.clone(),
-                                web: web.clone(),
-                            },
-                        );
-                    }
-                }
-                parse_map.remove(&day);
-            }
-        }
-        if parse_map.is_empty().not() {
-            return Err(D::Error::invalid_value(
-                Unexpected::Other("cycle within day definitions"),
-                &"a DAG of day definitions",
-            ));
-        }
-        Ok(Week(build_map))
-    }
-}
 
 /// The contents of /etc/keep-it-focused.yaml, covering the entire week.
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -243,14 +195,17 @@ pub struct Config {
 /// The contents of a patch file, valid only for one day.
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Extension {
-    pub users: HashMap<Username, DayConfig>,
+    pub users: HashMap<Username, ResolvedDayConfig>,
 }
 
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
 
-    use crate::types::{TimeOfDay, Username};
+    use crate::{
+        config::{DayConfig, ResolvedDayConfig},
+        types::{TimeOfDay, Username},
+    };
 
     use super::{Config, DayOfWeek};
 
@@ -281,14 +236,32 @@ mod test {
                                 - start: 0002
                                   end:   0003
         "#;
-        let config: Config = serde_yaml::from_str(sample).expect("invalid config");
-        let mickey = config
+        let mut config: Config = serde_yaml::from_str(sample).expect("invalid config");
+        let mut mickey = config
             .users
-            .get(&Username("mickey".to_string()))
+            .remove(&Username("mickey".to_string()))
             .expect("missing user mickey");
-        let mickey_monday = mickey.0.get(&DayOfWeek::monday()).unwrap();
-        let mickey_tuesday = mickey.0.get(&DayOfWeek::tuesday()).unwrap();
-        let mickey_wed = mickey.0.get(&DayOfWeek::wednesday()).unwrap();
+        let mickey_monday = mickey.0.remove(&DayOfWeek::monday()).unwrap();
+        let mickey_monday = match mickey_monday {
+            DayConfig::Instructions { web, processes, ip } => {
+                ResolvedDayConfig { web, processes, ip }
+            }
+            _ => panic!(),
+        };
+        let mickey_tuesday = mickey.0.remove(&DayOfWeek::tuesday()).unwrap();
+        let mickey_tuesday = match mickey_tuesday {
+            DayConfig::Instructions { web, processes, ip } => {
+                ResolvedDayConfig { web, processes, ip }
+            }
+            _ => panic!(),
+        };
+        let mickey_wed = mickey.0.remove(&DayOfWeek::wednesday()).unwrap();
+        let mickey_wed = match mickey_wed {
+            DayConfig::Instructions { web, processes, ip } => {
+                ResolvedDayConfig { web, processes, ip }
+            }
+            _ => panic!(),
+        };
         assert_eq!(mickey_monday.processes.len(), 1);
         assert_eq!(
             mickey_monday.processes[0].binary.path,
