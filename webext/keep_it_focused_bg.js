@@ -136,7 +136,6 @@ class TimeManager {
         }
         // Should we display a warning?
         let tabs = browser.tabs.query({
-            active: true,
             url: `*://*.${domain}/*`,
         });
         if (!remains) {
@@ -450,8 +449,21 @@ class ConfigManager {
     _lock = null;
     // `true` when the webextension is uninstalled.
     _shutdownRequested = false;
+    _promiseUpdateCanceled;
+    _cancelUpdate = () => { throw new Error("THIS SHOULD HAVE BEEN INITIALIZED"); };
+    /// The version of the extension.
+    ///
+    /// Used to let the server prompt an extension upgrade.
+    _extensionVersion = "<pending>";
+    constructor() {
+        this._promiseUpdateCanceled = new Promise(resolve => this._cancelUpdate = resolve);
+    }
     async init() {
         this._shutdownRequested = false;
+        // Check extension version.
+        let manifest = browser.runtime.getManifest();
+        this._extensionVersion = manifest.version;
+        console.info("keep-it-focused", "ConfigManager", "startup", "extension version", this._extensionVersion);
         // Update immediately, then loop in the background.
         console.info("keep-it-focused", "ConfigManager", "startup update", "start");
         await this._update({ immediate: true });
@@ -475,8 +487,14 @@ class ConfigManager {
         };
         loop();
     }
-    suspend() {
+    /**
+     * Stop the update loop, pending an add-on uninstall.
+     */
+    stop() {
         this._shutdownRequested = true;
+    }
+    async updateImmediately() {
+        await this._update({ immediate: true });
     }
     // Fetch rules if they haven't been fetched in a while, then update authorizations.
     //
@@ -484,13 +502,27 @@ class ConfigManager {
     async _update(options = {}) {
         if (this._lock) {
             console.log("keep-it-focused", "ConfigManager", "update", "update already in progress");
-            return;
+            if (options && options.immediate) {
+                console.log("keep-it-focused", "ConfigManager", "update", "forcing update");
+                // Cancel pending update.
+                this._cancelUpdate();
+                // Rearm cancel mechanism.
+                this._promiseUpdateCanceled = new Promise(resolve => this._cancelUpdate = resolve);
+            }
+            else {
+                return;
+            }
         }
         console.log("keep-it-focused", "ConfigManager", "update", "checking whether we need to update");
         let config;
         try {
-            this._lock = this._fetch(options);
-            config = await this._lock;
+            this._lock = Promise.race([this._fetch(options), this._promiseUpdateCanceled]);
+            let result = await this._lock;
+            if (result == null) {
+                // Update was canceled.
+                return;
+            }
+            config = result;
         }
         finally {
             this._lock = null;
@@ -557,7 +589,14 @@ class ConfigManager {
             console.error("keep-it-focused", "ConfigManager", "could not get in touch with update server, skipping this update");
             throw new Error("could not get in touch with update server");
         }
-        let json = await response.json();
+        let json;
+        try {
+            json = await response.json();
+        }
+        catch (ex) {
+            console.error("keep-it-focused", "ConfigManager", "invalid update from server", json);
+            throw ex;
+        }
         console.log("keep-it-focused", "ConfigManager", "obtained update from server", json);
         // Convert times in HHMM to Date(), which are simpler to use.
         let config = new Map();
@@ -615,13 +654,15 @@ browser.runtime.onInstalled.addListener(async () => {
 // On uninstall, eventually, stop the fetch loop.
 browser.runtime.onSuspend.addListener(async () => {
     console.log("keep-it-focused", "suspend", "preparing");
-    configManager.suspend();
+    configManager.stop();
 });
-browser.idle.onStateChanged.addListener((state) => {
+browser.idle.onStateChanged.addListener(async (state) => {
     console.log("keep-it-focused", "state changed", state);
     if (state == "active") {
         // We're coming back into activity, from e.g. suspended computer.
         // We may have missed alarms.
         timeManager.checkAllDomains();
+        // Also, we may have missed updates.
+        await configManager.updateImmediately();
     }
 });

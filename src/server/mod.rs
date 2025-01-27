@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context};
 use lazy_regex::lazy_regex;
 #[allow(unused)]
 use log::{debug, info, trace, warn};
+use serde::Deserialize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -24,12 +25,15 @@ const WAIT_TIMEOUT_SEC: u64 = 3600;
 /// for a simpler data model.
 pub struct Data {
     store: RwLock<HashMap<Uid, String>>,
+    #[allow(dead_code)]
+    extension_version: String,
     notify: Notify,
 }
 impl Data {
-    pub fn new(data: HashMap<Uid, String>) -> Self {
+    pub fn new(data: HashMap<Uid, String>, extension_version: String) -> Self {
         Self {
             store: RwLock::new(data),
+            extension_version,
             notify: Notify::new(),
         }
     }
@@ -44,8 +48,15 @@ pub struct Server {
 }
 impl Server {
     pub fn new(data: HashMap<Uid, String>, port: u16) -> Self {
+        let ext_manifest_source = include_str!("../../webext/manifest.json");
+        #[derive(Deserialize)]
+        struct ExtensionManifest {
+            version: String,
+        }
+        let ext_manifest_parsed: ExtensionManifest = serde_json::from_str(ext_manifest_source)
+            .expect("Failed to parse built-in extension manifest");
         Server {
-            data: Arc::new(Data::new(data)),
+            data: Arc::new(Data::new(data, ext_manifest_parsed.version)),
             port,
         }
     }

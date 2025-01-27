@@ -9,6 +9,7 @@ pub mod unix;
 use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc};
 
 use anyhow::Context;
+use chrono::{DateTime, Datelike, Local};
 use config::manager::ConfigManager;
 use log::{debug, info, warn};
 use serde::Serialize;
@@ -60,6 +61,8 @@ pub struct KeepItFocused {
 
     /// A minimal HTTP server running on its own thread to serve web filters to web browsers.
     server: Arc<Server>,
+
+    latest_tick: DateTime<Local>,
 }
 
 impl KeepItFocused {
@@ -71,6 +74,7 @@ impl KeepItFocused {
                 main_config: options.main_config.clone(),
                 extensions_dir: options.extensions_dir.clone(),
             }),
+            latest_tick: Local::now(),
             options,
         };
         // Load the configuration and pass it to `server`
@@ -80,7 +84,7 @@ impl KeepItFocused {
 
     pub async fn tick(&mut self) -> Result<(), anyhow::Error> {
         // Load any change.
-        let has_changes = match self.config.load_config() {
+        let mut has_changes = match self.config.load_config() {
             Err(err) => {
                 warn!("Failed to reload config, keeping previous config: {}", err);
                 false
@@ -89,6 +93,10 @@ impl KeepItFocused {
         };
 
         // Update server data.
+        let now = Local::now();
+        has_changes = has_changes || self.latest_tick.num_days_from_ce() != now.num_days_from_ce();
+
+        self.latest_tick = now;
         if has_changes {
             let data = self.config.config().serialize_web();
             self.server

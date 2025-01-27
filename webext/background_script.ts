@@ -151,7 +151,6 @@ class TimeManager {
 
         // Should we display a warning?
         let tabs = browser.tabs.query({
-            active: true,
             url: `*://*.${domain}/*`,
         });
         if (!remains) {
@@ -488,13 +487,29 @@ class ConfigManager {
     // Promise|null
     //
     // Resolves when `refetchIfNecessary` completes.
-    _lock: null | Promise<Map<string, Interval[]>> = null
+    _lock: null | Promise<Map<string, Interval[]> | void> = null
 
     // `true` when the webextension is uninstalled.
     _shutdownRequested: boolean = false
+    _promiseUpdateCanceled: Promise<void>
+    _cancelUpdate: () => void = () => { throw new Error("THIS SHOULD HAVE BEEN INITIALIZED") }
+
+    /// The version of the extension.
+    ///
+    /// Used to let the server prompt an extension upgrade.
+    _extensionVersion: string = "<pending>"
+
+    constructor() {
+        this._promiseUpdateCanceled = new Promise(resolve => this._cancelUpdate = resolve)
+    }
 
     async init() {
         this._shutdownRequested = false;
+        // Check extension version.
+        let manifest = browser.runtime.getManifest();
+        this._extensionVersion = manifest.version;
+        console.info("keep-it-focused", "ConfigManager", "startup", "extension version", this._extensionVersion);
+
         // Update immediately, then loop in the background.
         console.info("keep-it-focused", "ConfigManager", "startup update", "start");
         await this._update({ immediate: true });
@@ -518,8 +533,15 @@ class ConfigManager {
         loop();
     }
 
-    suspend() {
+    /**
+     * Stop the update loop, pending an add-on uninstall.
+     */
+    stop() {
         this._shutdownRequested = true;  
+    }
+
+    async updateImmediately() {
+        await this._update({ immediate: true });
     }
 
     // Fetch rules if they haven't been fetched in a while, then update authorizations.
@@ -528,14 +550,27 @@ class ConfigManager {
     async _update(options: { immediate?:boolean } = {}) {
         if (this._lock) {
             console.log("keep-it-focused", "ConfigManager", "update", "update already in progress");
-            return;
+            if (options && options.immediate) {
+                console.log("keep-it-focused", "ConfigManager", "update", "forcing update");
+                // Cancel pending update.
+                this._cancelUpdate();
+                // Rearm cancel mechanism.
+                this._promiseUpdateCanceled = new Promise(resolve => this._cancelUpdate = resolve);
+            } else {
+                return;
+            }
         }
 
         console.log("keep-it-focused", "ConfigManager", "update", "checking whether we need to update");
         let config;
         try {
-            this._lock = this._fetch(options);
-            config = await this._lock;
+            this._lock = Promise.race([this._fetch(options), this._promiseUpdateCanceled]);
+            let result = await this._lock;
+            if (result == null) {
+                // Update was canceled.
+                return;
+            }
+            config = result;
         } finally {
             this._lock = null;
         }
@@ -605,8 +640,16 @@ class ConfigManager {
             console.error("keep-it-focused", "ConfigManager", "could not get in touch with update server, skipping this update");
             throw new Error("could not get in touch with update server");
         }
-        type Payload = { [domain: string]: {start: string, end: string}[] };
-        let json = await response.json() as Payload;
+
+        // Handle updates.
+        type Payload = { [domain: string]: { start: string, end: string }[] };
+        let json;
+        try {
+            json = await response.json() as Payload;
+        } catch (ex) {
+            console.error("keep-it-focused", "ConfigManager", "invalid update from server", json);
+            throw ex;
+        }
         console.log("keep-it-focused", "ConfigManager", "obtained update from server", json);
 
         // Convert times in HHMM to Date(), which are simpler to use.
@@ -668,14 +711,16 @@ browser.runtime.onInstalled.addListener(async () => {
 // On uninstall, eventually, stop the fetch loop.
 browser.runtime.onSuspend.addListener(async () => {
     console.log("keep-it-focused", "suspend", "preparing");
-    configManager.suspend();
-})
-browser.idle.onStateChanged.addListener((state) => {
+    configManager.stop();
+});
+browser.idle.onStateChanged.addListener(async (state) => {
     console.log("keep-it-focused", "state changed", state);
     if (state == "active") {
         // We're coming back into activity, from e.g. suspended computer.
         // We may have missed alarms.
         timeManager.checkAllDomains();
+        // Also, we may have missed updates.
+        await configManager.updateImmediately();
     }
 });
 
@@ -754,6 +799,12 @@ declare namespace browser {
             type Callback = () => void;
             function addListener(callback: Callback): void
         }
+        type Manifest = {
+            name: string,
+            version: string,
+        }
+        function getManifest(): Manifest;
+        function reload(): void;
     }
     namespace alarms {
         type Alarm = {
@@ -776,14 +827,22 @@ declare namespace browser {
         }
     }
 }
-declare function fetch(resource: string, options?: FetchOptions): Promise<FetchResponse>;
-interface FetchRequest { }
-type FetchOptions = {
-    method: "GET",
+namespace Fetch {
+    export type Options = {
+        method: "GET",
+    }
+    export type Response = {
+        ok: false
+    } | {
+        ok: true,
+        json(): Promise<object>
+        text(): Promise<string>
+        headers: Headers
+    }
+    export interface Headers {
+        get(name: string): string | null
+    }
 }
-type FetchResponse = {
-    ok: false
-} | {
-    ok: true,
-    json(): Promise<object>
-}
+    
+    
+declare function fetch(resource: string, options?: Fetch.Options): Promise<Fetch.Response>;

@@ -1,7 +1,12 @@
 pub mod manager;
 
 use core::fmt;
-use std::{collections::{hash_map::Entry, HashMap}, fmt::Display, hash::Hash, path::PathBuf};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    fmt::Display,
+    hash::Hash,
+    path::PathBuf,
+};
 
 use crate::types::{DayOfWeek, Domain, Interval, Username};
 use anyhow::anyhow;
@@ -186,20 +191,22 @@ pub struct ResolvedDayConfig {
 pub struct Week(HashMap<DayOfWeek, DayConfig>);
 
 impl Week {
-    pub fn entry(&mut self, day: DayOfWeek) -> Entry<'_,  DayOfWeek, DayConfig> {
+    pub fn entry(&mut self, day: DayOfWeek) -> Entry<'_, DayOfWeek, DayConfig> {
         self.0.entry(day)
     }
-    pub fn resolve(&self, day: DayOfWeek)  -> Option<ResolvedDayConfig> {
+    pub fn resolve(&self, day: DayOfWeek) -> Option<ResolvedDayConfig> {
         let mut visit = day;
         let mut visited = [false; 7];
         while let Some(config) = self.0.get(&visit) {
             visited[visit.index()] = true;
             match config {
-                DayConfig::Instructions { processes, ip, web } => return Some(ResolvedDayConfig {
-                    processes: processes.clone(),
-                    ip: ip.clone(),
-                    web: web.clone(),
-                }),
+                DayConfig::Instructions { processes, ip, web } => {
+                    return Some(ResolvedDayConfig {
+                        processes: processes.clone(),
+                        ip: ip.clone(),
+                        web: web.clone(),
+                    })
+                }
                 DayConfig::Copy { like } if visited[like.index()] => {
                     // There's a cycle!
                     break;
@@ -212,7 +219,6 @@ impl Week {
         None
     }
 }
-
 
 /// The contents of /etc/keep-it-focused.yaml, covering the entire week.
 #[derive(Deserialize, Serialize, Default, Debug)]
@@ -269,11 +275,21 @@ mod test {
             .users
             .remove(&Username("mickey".to_string()))
             .expect("missing user mickey");
-        let mickey_monday = mickey.resolve(DayOfWeek::monday()).expect("Could not resolve monday");
-        let mickey_tuesday = mickey.resolve(DayOfWeek::tuesday()).expect("Could not resolve tuesday");
-        let mickey_wed = mickey.resolve(DayOfWeek::wednesday()).expect("Could not resolve wednesday");
-        let mickey_thur = mickey.resolve(DayOfWeek::thursday()).expect("Could not resolve thursday");
-        let _mickey_fri = mickey.resolve(DayOfWeek::friday()).map(|_| panic!("We should not have any content for friday"));
+        let mickey_monday = mickey
+            .resolve(DayOfWeek::monday())
+            .expect("Could not resolve monday");
+        let mickey_tuesday = mickey
+            .resolve(DayOfWeek::tuesday())
+            .expect("Could not resolve tuesday");
+        let mickey_wed = mickey
+            .resolve(DayOfWeek::wednesday())
+            .expect("Could not resolve wednesday");
+        let mickey_thur = mickey
+            .resolve(DayOfWeek::thursday())
+            .expect("Could not resolve thursday");
+        let _mickey_fri = mickey
+            .resolve(DayOfWeek::friday())
+            .map(|_| panic!("We should not have any content for friday"));
         assert_eq!(mickey_monday.processes.len(), 1);
         assert_eq!(
             mickey_monday.processes[0].binary.path,
