@@ -594,6 +594,7 @@ class ConfigManager {
         for (let k of this._config.keys()) {
             keys.add(k);
         }
+        console.debug("keep-it-focused", "ConfigManager", "update", "processing update", "keys", keys);
 
         for (let domain of keys) {
             let before = new Set(this._config.get(domain) || []);

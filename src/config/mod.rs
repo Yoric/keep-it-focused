@@ -5,7 +5,7 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     fmt::Display,
     hash::Hash,
-    path::PathBuf,
+    path::PathBuf, time::Duration,
 };
 
 use crate::types::{DayOfWeek, Domain, Interval, Username};
@@ -225,6 +225,14 @@ impl Week {
 pub struct Config {
     #[serde(default)]
     pub users: HashMap<Username, Week>,
+
+    #[serde(default="Config::default_interval")]
+    pub interval: Duration,
+}
+impl Config {
+    fn default_interval() -> Duration {
+        Duration::from_secs(15)
+    }
 }
 
 /// The contents of a patch file, valid only for one day.
