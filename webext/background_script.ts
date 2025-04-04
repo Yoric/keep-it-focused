@@ -606,7 +606,10 @@ class ConfigManager {
         for (let domain of keys) {
             let before = new Set(this._config.get(domain) || []);
             let after = new Set(config.get(domain) || []);
-            
+            if (after.size && config.get(domain)) {
+                // Special case: we have a domain that now has no authorization interval.
+                after = new Set([new Interval(new Date(), new Date())])
+            }
             for (let interval of after) {
                 if (before.has(interval)) {
                     // Interval was neither added nor removed.
