@@ -83,6 +83,8 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     struct ExtensionSettings {
         installation_mode: Option<InstallationMode>,
         install_url: Option<String>,
+        #[serde(default)]
+        private_browsing: bool,
         #[serde(flatten)]
         _others: serde_json::Value,
     }
@@ -121,6 +123,7 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
         .or_default();
     extension_settings.install_url = Some(INSTALL_URL.to_string());
     extension_settings.installation_mode = Some(InstallationMode::ForceInstalled);
+    extension_settings.private_browsing = true;
 
     // Write back content.
     debug!("writing {}", CONFIG_PATH);

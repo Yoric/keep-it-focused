@@ -1,3 +1,6 @@
+console.debug("keep-it-focused", "toplevel", "starting");
+
+
 // The minimal delay between two updates, in ms.
 const UPDATE_DELAY_MS = 1000 * 60;
 const ONE_MINUTE_MS = 1000 * 60;
@@ -17,7 +20,7 @@ class TimeManager {
     _domainsToCheck: Set<string> = new Set();
 
     init() {
-        browser.alarms.onAlarm.addListener(this._onAlarm)
+        browser.alarms.onAlarm.addListener((alarm) => this._onAlarm(alarm))
     }
 
     // Add an authorization.
@@ -236,8 +239,6 @@ class TimeManager {
             isEnter = false;
         }
         if (!authorization) {
-            // This can happen if the interval has been removed while we were looking away.
-            console.debug("keep-it-focused", "TimeManager", "_onAlarm", "no alarm found, bailing out");
             return;
         }
 
@@ -510,6 +511,12 @@ class ConfigManager {
         this._extensionVersion = manifest.version;
         console.info("keep-it-focused", "ConfigManager", "startup", "extension version", this._extensionVersion);
 
+        /*
+        browser.alarms.create("keep-it-focused.routine-check", {
+            periodInMinutes: 0.25,
+        })
+        browser.alarms.onAlarm.addListener((alarm) => this.routineCheck(alarm));
+        */
         // Update immediately, then loop in the background.
         console.info("keep-it-focused", "ConfigManager", "startup update", "start");
         await this._update({ immediate: true });
@@ -669,6 +676,47 @@ class ConfigManager {
         this._latestUpdateTS = now;
         return config;
     }
+
+    async routineCheck(alarm: browser.alarms.Alarm) {
+        // Note: crouturrently disabled.
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck");
+        if (alarm.name != "keep-it-focused.routine-check") {
+            // Wrong alarm.
+            console.debug("keep-it-focused", "ConfigManager", "routineCheck", "wrong alarm");
+            return;
+        }
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck", "proceeding");
+        await this._incognitoCheck();
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck", "complete");
+    }
+
+    async _incognitoCheck() {
+        console.debug("keep-it-focused", "ConfigManager", "incognitoCheck");
+        let isAllowed = await browser.extension.isAllowedIncognitoAccess();
+        if (isAllowed) {
+            // Alright, we're allowed, not a problem.
+            console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "we're allowed in incognito mode");
+            return;
+        }
+        console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "we're NOT allowed in incognito mode");
+        for (let win of await browser.windows.getAll()) {
+            if (win.incognito) {
+                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found an incognito window", win);
+                browser.notifications.create({
+                    type: "basic",
+                    title: "Keep it focused",
+                    message: "Looks like this extension is disabled in private windows. Closing private windows."
+                });
+                try {
+                    await browser.windows.remove(win.id);
+                } catch (e) {
+                    console.error("keep-it-focused", "ConfigManager", "Failed to close window", win.title, win.id, e);
+                }
+            } else {
+                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found a regular window", win);
+            }
+        }
+    }
 };
 // Global instance of the ConfigManager.
 const configManager = new ConfigManager();
@@ -696,12 +744,11 @@ function hhmmToDate(source: string): Date {
     return date;
 }
 
-
 // On startup, setup.
 browser.runtime.onInstalled.addListener(async () => {
     try {
         console.log("keep-it-focused", "setup", "starting");
-        await ruleManager.init();
+        await ruleManager.init(); // test
         console.log("keep-it-focused", "setup", "launching first update");
         await configManager.init();
         console.log("keep-it-focused", "setup", "complete");
@@ -725,6 +772,7 @@ browser.idle.onStateChanged.addListener(async (state) => {
     }
 });
 
+console.debug("keep-it-focused", "toplevel", "complete");
 
 declare namespace console {
     function debug(...messages: any[]): void;
@@ -747,6 +795,9 @@ declare namespace browser {
         }
         function getSessionRules(filter?: { ruleIds?: number[] }): Promise<Rule[]>
         function updateSessionRules(options: {addRules?: declarativeNetRequest.Rule[], removeRuleIds?: number[]}): Promise<void>
+    }
+    namespace extension {
+        function isAllowedIncognitoAccess(): Promise<boolean>
     }
     namespace idle {
         type IdleState = "active" | "idle" | "locked";
@@ -825,6 +876,20 @@ declare namespace browser {
         function clear(id: string): Promise<void>
         namespace onAlarm {
             function addListener(cb: (alarm: Alarm) => void): void
+        }
+    }
+    namespace windows {
+        type ID = number
+        type Window = {
+            incognito: boolean
+            id: ID
+            title: string
+        }
+
+        function getAll(): Promise<Window[]>
+        function remove(id: ID): Promise<void>
+        namespace onCreated {
+            function addListener(listener: ((window:Window) => void)): void
         }
     }
 }

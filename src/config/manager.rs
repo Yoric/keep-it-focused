@@ -1,8 +1,5 @@
 use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    rc::Rc,
-    time::UNIX_EPOCH,
+    collections::HashMap, path::{Path, PathBuf}, rc::Rc, time::{Duration, UNIX_EPOCH}
 };
 
 use anyhow::Context;
@@ -36,9 +33,10 @@ pub struct Options {
     pub extensions_dir: PathBuf,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Precompiled {
     today_per_user: HashMap<Uid, UserInstructions>,
+    interval: Duration,
 }
 impl Precompiled {
     /// Serialize the web component to JSON, fit for serving.
@@ -57,6 +55,17 @@ impl Precompiled {
     }
     pub fn today_per_user(&self) -> &HashMap<Uid, UserInstructions> {
         &self.today_per_user
+    }
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+}
+impl Default for Precompiled {
+    fn default() -> Self {
+        Precompiled {
+            today_per_user: HashMap::new(),
+            interval: Duration::from_secs(10),
+        }
     }
 }
 
@@ -150,6 +159,7 @@ impl ConfigManager {
 
         // 1. Load main file.
         info!("reading config: loading main file");
+        let mut interval = self.config.interval;
         has_changes |= self.fetch_and_cache(self.options.main_config.clone(), false, |file| {
             let config: Config = serde_yaml::from_reader(file).context("Invalid format")?;
             let mut result = HashMap::new();
@@ -164,6 +174,7 @@ impl ConfigManager {
                     debug!("processing user {user} - no rule for today");
                 }
             }
+            interval = config.interval;
             Ok(result)
         })?;
         debug!(
@@ -239,7 +250,7 @@ impl ConfigManager {
         if has_changes || self.last_computed.day() != now.day() {
             // We need to recompile today's config if there have been changes or whenever a new day starts.
             self.config =
-                Self::compile(&self.cache).context("error while compiling the configuration")?;
+                Self::compile(&self.cache, interval).context("error while compiling the configuration")?;
             self.last_computed = now;
         }
         Ok(has_changes)
@@ -249,7 +260,7 @@ impl ConfigManager {
     ///
     /// - restrict to the current day of the week;
     /// - resolve `like` days.
-    fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
+    fn compile(cache: &HashMap<PathBuf, CacheEntry>, interval: Duration) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
         struct TodayPerUser {
@@ -326,6 +337,7 @@ impl ConfigManager {
         // Now resolve intervals and usernames.
         let mut resolved = Precompiled {
             today_per_user: HashMap::new(),
+            interval,
         };
         for (user_name, user_entry) in today_per_user {
             let Ok(uid) = resolver.resolve(&user_name) else {

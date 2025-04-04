@@ -2,7 +2,7 @@ use std::{
     io::ErrorKind,
     ops::{Deref, Not},
     path::PathBuf,
-    thread,
+    thread, time::Duration,
 };
 
 use anyhow::{anyhow, Context};
@@ -46,10 +46,6 @@ enum Command {
     ///
     /// For iptables, you'll need to be root.
     Run {
-        /// How often to check for offending processes.
-        #[arg(short, long, default_value = "60")]
-        sleep_s: u64,
-
         #[arg(short, long, default_value = DEFAULT_PORT)]
         port: u16,
 
@@ -327,7 +323,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
         Command::Run {
-            sleep_s,
             port,
             ip_tables,
         } => {
@@ -346,12 +341,15 @@ async fn main() -> Result<(), anyhow::Error> {
             .context("Failed to apply configuration")?;
             focuser.background_serve();
 
+            let mut duration = Duration::from_secs(0);
             loop {
                 info!("loop: {}", "sleeping");
-                thread::sleep(std::time::Duration::from_secs(sleep_s));
-                if let Err(err) = focuser.tick().await {
-                    warn!("problem during tick, skipping! {:?}", err);
-                }
+                thread::sleep(duration);
+                duration = focuser.tick().await
+                    .unwrap_or_else(|err| {
+                        warn!("problem during tick, skipping! {:?}", err);
+                        duration
+                    });
             }
         }
         Command::Setup {

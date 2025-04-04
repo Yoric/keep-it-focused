@@ -1,4 +1,5 @@
 "use strict";
+console.debug("keep-it-focused", "toplevel", "starting");
 // The minimal delay between two updates, in ms.
 const UPDATE_DELAY_MS = 1000 * 60;
 const ONE_MINUTE_MS = 1000 * 60;
@@ -15,7 +16,7 @@ class TimeManager {
     _authorizationsByAlarmKeyExit = new Map();
     _domainsToCheck = new Set();
     init() {
-        browser.alarms.onAlarm.addListener(this._onAlarm);
+        browser.alarms.onAlarm.addListener((alarm) => this._onAlarm(alarm));
     }
     // Add an authorization.
     //
@@ -221,8 +222,6 @@ class TimeManager {
             isEnter = false;
         }
         if (!authorization) {
-            // This can happen if the interval has been removed while we were looking away.
-            console.debug("keep-it-focused", "TimeManager", "_onAlarm", "no alarm found, bailing out");
             return;
         }
         let now = new Date();
@@ -464,6 +463,12 @@ class ConfigManager {
         let manifest = browser.runtime.getManifest();
         this._extensionVersion = manifest.version;
         console.info("keep-it-focused", "ConfigManager", "startup", "extension version", this._extensionVersion);
+        /*
+        browser.alarms.create("keep-it-focused.routine-check", {
+            periodInMinutes: 0.25,
+        })
+        browser.alarms.onAlarm.addListener((alarm) => this.routineCheck(alarm));
+        */
         // Update immediately, then loop in the background.
         console.info("keep-it-focused", "ConfigManager", "startup update", "start");
         await this._update({ immediate: true });
@@ -544,6 +549,7 @@ class ConfigManager {
         for (let k of this._config.keys()) {
             keys.add(k);
         }
+        console.debug("keep-it-focused", "ConfigManager", "update", "processing update", "keys", keys);
         for (let domain of keys) {
             let before = new Set(this._config.get(domain) || []);
             let after = new Set(config.get(domain) || []);
@@ -614,6 +620,47 @@ class ConfigManager {
         this._latestUpdateTS = now;
         return config;
     }
+    async routineCheck(alarm) {
+        // Note: crouturrently disabled.
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck");
+        if (alarm.name != "keep-it-focused.routine-check") {
+            // Wrong alarm.
+            console.debug("keep-it-focused", "ConfigManager", "routineCheck", "wrong alarm");
+            return;
+        }
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck", "proceeding");
+        await this._incognitoCheck();
+        console.debug("keep-it-focused", "ConfigManager", "routineCheck", "complete");
+    }
+    async _incognitoCheck() {
+        console.debug("keep-it-focused", "ConfigManager", "incognitoCheck");
+        let isAllowed = await browser.extension.isAllowedIncognitoAccess();
+        if (isAllowed) {
+            // Alright, we're allowed, not a problem.
+            console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "we're allowed in incognito mode");
+            return;
+        }
+        console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "we're NOT allowed in incognito mode");
+        for (let win of await browser.windows.getAll()) {
+            if (win.incognito) {
+                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found an incognito window", win);
+                browser.notifications.create({
+                    type: "basic",
+                    title: "Keep it focused",
+                    message: "Looks like this extension is disabled in private windows. Closing private windows."
+                });
+                try {
+                    await browser.windows.remove(win.id);
+                }
+                catch (e) {
+                    console.error("keep-it-focused", "ConfigManager", "Failed to close window", win.title, win.id, e);
+                }
+            }
+            else {
+                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found a regular window", win);
+            }
+        }
+    }
 }
 ;
 // Global instance of the ConfigManager.
@@ -642,7 +689,7 @@ function hhmmToDate(source) {
 browser.runtime.onInstalled.addListener(async () => {
     try {
         console.log("keep-it-focused", "setup", "starting");
-        await ruleManager.init();
+        await ruleManager.init(); // test
         console.log("keep-it-focused", "setup", "launching first update");
         await configManager.init();
         console.log("keep-it-focused", "setup", "complete");
@@ -666,3 +713,4 @@ browser.idle.onStateChanged.addListener(async (state) => {
         await configManager.updateImmediately();
     }
 });
+console.debug("keep-it-focused", "toplevel", "complete");

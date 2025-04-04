@@ -6,7 +6,7 @@ pub mod types;
 #[cfg(target_family = "unix")]
 pub mod unix;
 
-use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc};
+use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use chrono::{DateTime, Datelike, Local};
@@ -82,7 +82,7 @@ impl KeepItFocused {
         Ok(me)
     }
 
-    pub async fn tick(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn tick(&mut self) -> Result<Duration, anyhow::Error> {
         // Load any change.
         let mut has_changes = match self.config.load_config() {
             Err(err) => {
@@ -108,7 +108,8 @@ impl KeepItFocused {
                     .context("Failed to update ip tables")?;
             }
         }
-        self.find_offending_processes()
+        self.find_offending_processes()?;
+        Ok(self.config.config().interval())
     }
 
     #[cfg(not(feature = "ip_tables"))]
