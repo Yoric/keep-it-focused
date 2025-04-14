@@ -109,7 +109,7 @@ impl Server {
         info!("received request from port: {}", peer.port());
 
         // Find the inode for this port.
-        let owner = find_peer_owner(peer)?;
+        let (owner, process) = find_peer_owner(peer)?;
 
         let mut reader = BufReader::new(&mut stream);
         let mut line = String::new();
@@ -132,20 +132,27 @@ impl Server {
             }
         };
 
-        let expect_immediate_result = url == "/immediate";
-
-        // Unless we need an immediate result, wait for an update.
-        if expect_immediate_result {
-            debug!("immediate response requested, responding");
-        } else {
-            tokio::select! {
-                _ = data.notify.notified() => {
-                    debug!("data was modified, responding");
+        match url.as_str() {
+            "/immediate" => {
+                debug!("immediate response requested, responding");
+            }
+            "/killme" => {
+                debug!("the browser has requested to be killed");
+                if let Err(err) = kill_tree::blocking::kill_tree(process.0 as u32) {
+                    warn!("failed to kill process {}: {}", process.0, err)
                 }
-                _ = tokio::time::sleep(Duration::from_secs(WAIT_TIMEOUT_SEC)) => {
-                    debug!("timeout exceeded, responding");
-                }
-            };
+            }
+            _ => {
+                // Unless we need an immediate result, wait for an update.
+                tokio::select! {
+                    _ = data.notify.notified() => {
+                        debug!("data was modified, responding");
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(WAIT_TIMEOUT_SEC)) => {
+                        debug!("timeout exceeded, responding");
+                    }
+                };    
+            }
         }
 
         // Respond with the latest version.

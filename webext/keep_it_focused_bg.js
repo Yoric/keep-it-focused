@@ -72,11 +72,13 @@ class TimeManager {
         console.log("keep-it-focused", "TimeManager", "removing interval", domain, interval);
         let byInterval = this._authorizationsByDomain.get(domain);
         if (!byInterval) {
-            throw new TypeError("No rule for domain " + domain);
+            console.error("keep-it-focused", "TimeManager", "No rule to remove for domain", domain);
+            return;
         }
         let authorization = byInterval.get(interval);
         if (!authorization) {
-            throw new TypeError("No rule for domain " + domain + " interval " + interval);
+            console.error("keep-it-focused", "TimeManager", "No rule to remove for domain", domain, "interval", interval);
+            return;
         }
         byInterval.delete(interval);
         if (byInterval.size == 0) {
@@ -211,7 +213,7 @@ class TimeManager {
     async _onAlarm(alarm) {
         console.debug("keep-it-focused", "TimeManager", "_onAlarm triggered", alarm);
         // True if we reach this point by entering the validity interval.
-        // False if we reachi this point by exiting (or nearing the end of) the validity interval.
+        // False if we reach this point by exiting (or nearing the end of) the validity interval.
         let isEnter;
         let authorization = this._authorizationsByAlarmKeyEnter.get(alarm.name);
         if (authorization) {
@@ -222,6 +224,7 @@ class TimeManager {
             isEnter = false;
         }
         if (!authorization) {
+            // Unrelated alarm.
             return;
         }
         let now = new Date();
@@ -324,6 +327,9 @@ class RuleManager {
         });
         this._urlFilters = null; // We'll need to recompute url filters.
     }
+    domains() {
+        return [...this._currentRulesByDomain.keys()];
+    }
     // Flush any authorization added/removed since the latest flush.
     async flush() {
         console.log("keep-it-focused", "RuleManager", "rules before flush", this._currentRules);
@@ -359,6 +365,7 @@ class RuleManager {
     // to offending domain and subdomains.
     updateURLFilters() {
         if (!this._urlFilters) {
+            // The url filters cache is invalid, let's rebuild it.
             browser.tabs.onUpdated.removeListener(this._tabListener);
             this._urlFilters = [...this._currentRulesByDomain.keys()]
                 .map((k) => `*://*.${k}/*`);
@@ -463,12 +470,12 @@ class ConfigManager {
         let manifest = browser.runtime.getManifest();
         this._extensionVersion = manifest.version;
         console.info("keep-it-focused", "ConfigManager", "startup", "extension version", this._extensionVersion);
-        /*
+        // Handle pages that are loaded by Session Restore.
         browser.alarms.create("keep-it-focused.routine-check", {
-            periodInMinutes: 0.25,
-        })
+            delayInMinutes: 2,
+            periodInMinutes: 1,
+        });
         browser.alarms.onAlarm.addListener((alarm) => this.routineCheck(alarm));
-        */
         // Update immediately, then loop in the background.
         console.info("keep-it-focused", "ConfigManager", "startup update", "start");
         await this._update({ immediate: true });
@@ -480,9 +487,9 @@ class ConfigManager {
                 //
                 // We count on the server to respond slowly.
                 try {
-                    console.info("keep-it-focused", "ConfigManager", "background update", "start");
+                    console.info("keep-it-focused", "ConfigManager", "background update", "waiting");
                     await this._update();
-                    console.info("keep-it-focused", "ConfigManager", "background update", "complete");
+                    console.info("keep-it-focused", "ConfigManager", "background update", "received update");
                 }
                 catch (ex) {
                     console.error("keep-it-focused", "ConfigManager", "background error", ex);
@@ -490,6 +497,7 @@ class ConfigManager {
             }
             console.info("keep-it-focused", "ConfigManager", "background update", "shutdown");
         };
+        console.info("keep-it-focused", "ConfigManager", "launching startup update");
         loop();
     }
     /**
@@ -503,7 +511,7 @@ class ConfigManager {
     }
     // Fetch rules if they haven't been fetched in a while, then update authorizations.
     //
-    // If `immediate` is `true`, fetch without waiting. Otherwise, wait until the daemon responds.
+    // If `immediate` is `true`, fetch (still asynchronously) without waiting. Otherwise, wait until the daemon responds.
     async _update(options = {}) {
         if (this._lock) {
             console.log("keep-it-focused", "ConfigManager", "update", "update already in progress");
@@ -549,14 +557,13 @@ class ConfigManager {
         for (let k of this._config.keys()) {
             keys.add(k);
         }
+        for (let k of ruleManager.domains()) {
+            keys.add(k);
+        }
         console.debug("keep-it-focused", "ConfigManager", "update", "processing update", "keys", keys);
         for (let domain of keys) {
             let before = new Set(this._config.get(domain) || []);
             let after = new Set(config.get(domain) || []);
-            if (after.size && config.get(domain)) {
-                // Special case: we have a domain that now has no authorization interval.
-                after = new Set([new Interval(new Date(), new Date())]);
-            }
             for (let interval of after) {
                 if (before.has(interval)) {
                     // Interval was neither added nor removed.
@@ -645,25 +652,16 @@ class ConfigManager {
             return;
         }
         console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "we're NOT allowed in incognito mode");
-        for (let win of await browser.windows.getAll()) {
-            if (win.incognito) {
-                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found an incognito window", win);
-                browser.notifications.create({
-                    type: "basic",
-                    title: "Keep it focused",
-                    message: "Looks like this extension is disabled in private windows. Closing private windows."
-                });
-                try {
-                    await browser.windows.remove(win.id);
-                }
-                catch (e) {
-                    console.error("keep-it-focused", "ConfigManager", "Failed to close window", win.title, win.id, e);
-                }
-            }
-            else {
-                console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "found a regular window", win);
-            }
-        }
+        browser.notifications.create({
+            type: "basic",
+            title: "Keep it focused",
+            message: "Looks like this extension is disabled in private windows. Closing Firefox."
+        });
+        let url = "http://localhost:7878/killme";
+        let response = await fetch(url, {
+            method: "GET",
+        });
+        console.debug("keep-it-focused", "ConfigManager", "incognitoCheck", "killme response", response);
     }
 }
 ;
@@ -690,7 +688,7 @@ function hhmmToDate(source) {
     return date;
 }
 // On startup, setup.
-browser.runtime.onInstalled.addListener(async () => {
+async function setup() {
     try {
         console.log("keep-it-focused", "setup", "starting");
         await ruleManager.init(); // test
@@ -701,7 +699,8 @@ browser.runtime.onInstalled.addListener(async () => {
     catch (ex) {
         console.error("keep-it-focused", "setup", "error", ex);
     }
-});
+}
+setup();
 // On uninstall, eventually, stop the fetch loop.
 browser.runtime.onSuspend.addListener(async () => {
     console.log("keep-it-focused", "suspend", "preparing");

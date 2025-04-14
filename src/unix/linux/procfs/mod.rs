@@ -5,9 +5,10 @@ use log::debug;
 use procfs::process::FDTarget;
 
 use crate::unix::uid_resolver::Uid;
+use crate::unix::uid_resolver::Pid;
 
 /// Find the user owning a peer currently opened locally.
-pub fn find_peer_owner(peer: SocketAddr) -> Result<Uid, anyhow::Error> {
+pub fn find_peer_owner(peer: SocketAddr) -> Result<(Uid, Pid), anyhow::Error> {
     let mut inode_local = None;
     let tcp = procfs::net::tcp()
         .unwrap_or_default()
@@ -25,7 +26,7 @@ pub fn find_peer_owner(peer: SocketAddr) -> Result<Uid, anyhow::Error> {
 
     // Find the process owning this inode.
     let processes = procfs::process::all_processes().context("Could not access /proc")?;
-    let mut owner = None;
+    let mut result = None;
     for process in processes {
         let Ok(process) = process else { continue };
         let Ok(exe) = process.exe() else { continue };
@@ -35,19 +36,17 @@ pub fn find_peer_owner(peer: SocketAddr) -> Result<Uid, anyhow::Error> {
             if let FDTarget::Socket(inode) = fd.target {
                 if inode_local == inode {
                     debug!(
-                        "found process {} for local inode, with owner {:?}",
+                        "found process {} for local inode, with owner {:?} and pid {}",
                         exe.display(),
-                        process.exe()
+                        process.exe(),
+                        process.pid,
                     );
                     let Ok(uid) = process.uid() else { continue };
-                    owner = Some(uid);
+                    result = Some((Uid(uid), Pid(process.pid)));
                     break;
                 }
             }
         }
     }
-    match owner {
-        Some(owner) => Ok(Uid(owner)),
-        None => Err(anyhow!("No owner found")),
-    }
+    result.ok_or_else(|| anyhow!("No owner found"))
 }
