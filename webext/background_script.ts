@@ -683,6 +683,12 @@ class ConfigManager {
                 let dateEnd = hhmmToDate(end);
                 dateIntervals.push(new Interval(dateStart, dateEnd));
             }
+            if (dateIntervals.length == 0) {
+                // Special case: a domain that is never allowed.
+                let dateStart = hhmmToDate("0000");
+                let dateEnd = hhmmToDate("0000");
+                dateIntervals.push(new Interval(dateStart, dateEnd));
+            }
             config.set(domain, dateIntervals);
         }
         this._latestUpdateTS = now;
