@@ -1,15 +1,12 @@
 pub mod manager;
-
+pub mod instruction;
 use core::fmt;
 use std::{
-    collections::{hash_map::Entry, HashMap},
-    fmt::Display,
-    hash::Hash,
-    path::PathBuf, time::Duration,
+    collections::{hash_map::Entry, HashMap}, fmt::Display, hash::Hash, path::PathBuf, time::Duration
 };
 
-use crate::types::{DayOfWeek, Domain, Interval, Username};
-use anyhow::anyhow;
+use crate::{config::instruction::Template, types::{DayOfWeek, Domain, Interval, Username}};
+use anyhow::{anyhow,};
 use globset::{Glob, GlobMatcher};
 use log::trace;
 use serde::{
@@ -113,7 +110,12 @@ pub struct ProcessFilter {
     /// intervals specified by `permitted`.
     #[serde(default)]
     pub forbidden: Vec<Interval>,
+
+    /// AN instruction to run once the binary is forbidden.
+    #[serde(default)]
+    pub then: Option<Template>,
 }
+
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct WebFilter {

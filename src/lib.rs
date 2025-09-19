@@ -17,7 +17,7 @@ use server::Server;
 use typed_builder::TypedBuilder;
 use types::{AcceptedInterval, Domain, RejectedInterval, Username};
 
-use crate::{config::Binary, types::TimeOfDay};
+use crate::{config::{Binary, instruction::Template}, types::TimeOfDay};
 
 #[cfg(target_os = "linux")]
 use crate::unix::linux::notify::{notify, Urgency};
@@ -25,9 +25,16 @@ use crate::unix::linux::notify::{notify, Urgency};
 use crate::unix::uid_resolver::{self, Uid};
 
 #[derive(Serialize, Debug, Clone)]
+pub struct ProcessInstruction {
+    pub binary: Binary,
+    pub intervals: Vec<AcceptedInterval>,
+    pub then: Option<Template>,
+}
+
+#[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
     pub user_name: Rc<Username>,
-    pub processes: Vec<(Binary, Vec<AcceptedInterval>)>,
+    pub processes: Vec<ProcessInstruction>,
     pub ips: HashMap<Domain, Vec<RejectedInterval>>,
     pub web: HashMap<Domain, Vec<AcceptedInterval>>,
 }
@@ -236,7 +243,7 @@ impl KeepItFocused {
             };
             let Ok(exe) = proc.exe() else { continue };
 
-            for (binary, intervals) in &user_config.processes {
+            for ProcessInstruction { binary, intervals, then } in &user_config.processes {
                 if !binary.matcher.is_match(&exe) {
                     continue;
                 }
@@ -276,14 +283,35 @@ impl KeepItFocused {
                     ) {
                         warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                     }
-                    if let Err(err) = kill_tree::blocking::kill_tree_with_config(
-                        proc.pid as u32,
-                        &kill_tree::Config {
-                            signal: "SIGKILL".to_string(),
-                            ..Default::default()
-                        },
-                    ) {
-                        warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
+                    
+                    match then {
+                        None => {
+                            // Default implementation: kill!
+                            if let Err(err) = kill_tree::blocking::kill_tree_with_config(
+                                proc.pid as u32,
+                                &kill_tree::Config {
+                                    signal: "SIGKILL".to_string(),
+                                    ..Default::default()
+                                },
+                            ) {
+                                warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
+                            }
+                        }
+                        Some(then) => {
+                            let map: HashMap<_, _> = [
+                                ("binary".to_string(), exe.to_string_lossy().to_string())
+                            ].into();
+                            match then.render(&map) {
+                                Ok(mut instruction) => {
+                                    instruction.output()
+                                        .with_context(|| format!("failed to launch instruction {then}"))?;
+                                }
+                                Err(err) => {
+                                    warn!("failed to compile `then`: {err}");
+                                    continue;    
+                                }
+                            }
+                        }
                     }
                     info!("binary killed");
                 }

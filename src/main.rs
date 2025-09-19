@@ -13,11 +13,10 @@ use systemd_journal_logger::{connected_to_journal, JournalLog};
 
 use keep_it_focused::{
     config::{
-        manager::{ConfigManager, Options as ConfigOptions},
-        Binary, Config, DayConfig, Extension, ProcessFilter, WebFilter,
+        manager::{ConfigManager, Options as ConfigOptions}, Binary, Config, DayConfig, Extension, ProcessFilter, instruction::Template, WebFilter
     },
     types::{DayOfWeek, Domain, Interval, TimeOfDay, Username},
-    KeepItFocused,
+    KeepItFocused, ProcessInstruction,
 };
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/keep-it-focused.yaml";
@@ -172,6 +171,12 @@ struct PermanentFilter {
     /// When the authorization stops.
     #[arg(long, value_parser=TimeOfDay::parse)]
     end: TimeOfDay,
+
+    /// Code to run when once the binary or domain is forbidden.
+    ///
+    /// EXPERIMENTAL: Implemented only for binary for the time being.
+    #[arg(long, value_parser=template_parser)]
+    then: Option<Template>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -193,6 +198,16 @@ struct ExceptionalFilter {
     /// How long it lasts, in minutes (conflicts with `end`).
     #[arg(long, alias="duration", conflicts_with_all=["end"])]
     minutes: Option<u16>,
+
+    /// Code to run when once the binary or domain is forbidden.
+    ///
+    /// EXPERIMENTAL: Implemented only for binary for the time being.
+    #[arg(long, value_parser=template_parser)]
+    then: Option<Template>,
+}
+
+fn template_parser(source: &str) -> Result<Template, anyhow::Error> {
+    Template::try_from(source)
 }
 
 /// A daemon designed to help avoid using some programs or websites
@@ -282,7 +297,7 @@ async fn main() -> Result<(), anyhow::Error> {
             match kind {
                 Kind::Binary { binaries } => {
                     'binaries: for path in binaries {
-                        for (binary, intervals) in &config.processes {
+                        for ProcessInstruction { binary, intervals, then: _ } in &config.processes {
                             if binary.matcher.is_match(&path) {
                                 for interval in intervals {
                                     let Some(remaining) = interval.0.remaining(now) else {
@@ -472,6 +487,7 @@ async fn main() -> Result<(), anyhow::Error> {
                                 binary: binary.clone(),
                                 permitted: permitted.clone(),
                                 forbidden: forbidden.clone(),
+                                then: verb.then.clone(),
                             });
                         }
                     }
@@ -541,6 +557,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             binary: binary.clone(),
                             permitted: permitted.clone(),
                             forbidden: forbidden.clone(),
+                            then: verb.then.clone(),
                         });
                     }
                 }

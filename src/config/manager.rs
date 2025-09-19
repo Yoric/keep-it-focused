@@ -8,7 +8,7 @@ use itertools::Itertools;
 use log::{debug, info, warn};
 
 use crate::{
-    config::{Binary, Config, Extension},
+    config::{Binary, Config, Extension, instruction::Template},
     types::{AcceptedInterval, DayOfWeek, Domain, IntervalsDiff, RejectedInterval, Username},
     uid_resolver::{self, Uid},
     UserInstructions,
@@ -264,7 +264,7 @@ impl ConfigManager {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
         struct TodayPerUser {
-            processes: HashMap<Binary, Vec<IntervalsDiff>>,
+            processes: HashMap<Binary, (Vec<IntervalsDiff>, Option<Template>)>,
             ips: HashMap<Domain, Vec<IntervalsDiff>>,
             web: HashMap<Domain, Vec<IntervalsDiff>>,
         }
@@ -287,11 +287,14 @@ impl ConfigManager {
                         .cloned()
                         .map(RejectedInterval)
                         .collect_vec();
-                    user_entry
+                    let entry = user_entry
                         .processes
                         .entry(proc.binary.clone())
-                        .or_default()
-                        .push(IntervalsDiff { accepted, rejected });
+                        .or_default();
+                    entry.0.push(IntervalsDiff { accepted, rejected });
+                    if proc.then.is_some() {
+                        entry.1 = proc.then.clone();
+                    }
                 }
                 for ip in &day_config.ip {
                     let accepted = ip
@@ -349,9 +352,13 @@ impl ConfigManager {
                 let resolved = IntervalsDiff::compute_rejected_intervals(intervals);
                 per_user.ips.insert(domain, resolved);
             }
-            for (binary, intervals) in user_entry.processes {
+            for (binary, (intervals, then)) in user_entry.processes {
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
-                per_user.processes.push((binary, resolved));
+                per_user.processes.push(crate::ProcessInstruction {
+                    binary,
+                    intervals: resolved,
+                    then
+                });
             }
             for (domain, intervals) in user_entry.web {
                 debug!("domain {domain}: preparing to resolve intervals {intervals:?}");
