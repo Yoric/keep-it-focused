@@ -1,10 +1,12 @@
 pub mod manager;
-
+pub mod instruction;
 use core::fmt;
-use std::{collections::HashMap, fmt::Display, hash::Hash, ops::Not, path::PathBuf};
+use std::{
+    collections::{hash_map::Entry, HashMap}, fmt::Display, hash::Hash, path::PathBuf, time::Duration
+};
 
-use crate::types::{DayOfWeek, Domain, Interval, Username};
-use anyhow::anyhow;
+use crate::{config::instruction::Template, types::{DayOfWeek, Domain, Interval, Username}};
+use anyhow::{anyhow,};
 use globset::{Glob, GlobMatcher};
 use log::trace;
 use serde::{
@@ -108,7 +110,12 @@ pub struct ProcessFilter {
     /// intervals specified by `permitted`.
     #[serde(default)]
     pub forbidden: Vec<Interval>,
+
+    /// AN instruction to run once the binary is forbidden.
+    #[serde(default)]
+    pub then: Option<Template>,
 }
+
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Debug)]
 pub struct WebFilter {
@@ -129,9 +136,9 @@ pub struct WebFilter {
     pub forbidden: Vec<Interval>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(untagged)]
-enum DayConfigParser {
+pub enum DayConfig {
     Copy {
         /// Copy the configuration of another day of the week.
         like: DayOfWeek,
@@ -155,81 +162,63 @@ enum DayConfigParser {
         web: Vec<WebFilter>,
     },
 }
+impl Default for DayConfig {
+    fn default() -> Self {
+        DayConfig::Instructions {
+            processes: vec![],
+            ip: vec![],
+            web: vec![],
+        }
+    }
+}
 
-#[derive(Deserialize, Serialize, PartialEq, Debug, Default)]
-pub struct DayConfig {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Default)]
+pub struct ResolvedDayConfig {
+    /// Block certain processes during given time periods.
     pub processes: Vec<ProcessFilter>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Block certain IPs during given time periods.
+    ///
+    /// Note: This doesn't work with e.g. youtube.com, as they
+    /// load-balance between millions of IPs.
     pub ip: Vec<WebFilter>,
 
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Block certain domains during given time periods.
+    ///
+    /// Note: This requires the companion browser extension.
     pub web: Vec<WebFilter>,
 }
 
-#[derive(Serialize, Default, Debug)]
-pub struct Week(pub HashMap<DayOfWeek, DayConfig>);
+#[derive(Deserialize, Serialize, Default, Debug)]
+pub struct Week(HashMap<DayOfWeek, DayConfig>);
 
-impl<'de> Deserialize<'de> for Week {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{Error, Unexpected};
-        trace!("attempting to parse week");
-        let mut parse_map = HashMap::<DayOfWeek, DayConfigParser>::deserialize(deserializer)?;
-        let mut build_map = HashMap::<DayOfWeek, DayConfig>::new();
-
-        trace!("attempting to normalize week");
-        // Let's be a bit hackish here. As there are exactly 7 per week, we need at most 7 steps to flatten any reference.
-        for _ in 0..7 {
-            for day in [
-                DayOfWeek::monday(),
-                DayOfWeek::tuesday(),
-                DayOfWeek::wednesday(),
-                DayOfWeek::thursday(),
-                DayOfWeek::friday(),
-                DayOfWeek::saturday(),
-                DayOfWeek::sunday(),
-            ] {
-                match parse_map.get(&day) {
-                    None => continue,
-                    Some(DayConfigParser::Copy { like: other }) => {
-                        // Attempt to resolve.
-                        let Some(d) = build_map.get(other) else {
-                            continue;
-                        };
-                        build_map.insert(
-                            day,
-                            DayConfig {
-                                processes: d.processes.clone(),
-                                ip: d.ip.clone(),
-                                web: d.web.clone(),
-                            },
-                        );
-                    }
-                    Some(DayConfigParser::Instructions { processes, ip, web }) => {
-                        build_map.insert(
-                            day,
-                            DayConfig {
-                                processes: processes.clone(),
-                                ip: ip.clone(),
-                                web: web.clone(),
-                            },
-                        );
-                    }
+impl Week {
+    pub fn entry(&mut self, day: DayOfWeek) -> Entry<'_, DayOfWeek, DayConfig> {
+        self.0.entry(day)
+    }
+    pub fn resolve(&self, day: DayOfWeek) -> Option<ResolvedDayConfig> {
+        let mut visit = day;
+        let mut visited = [false; 7];
+        while let Some(config) = self.0.get(&visit) {
+            visited[visit.index()] = true;
+            match config {
+                DayConfig::Instructions { processes, ip, web } => {
+                    return Some(ResolvedDayConfig {
+                        processes: processes.clone(),
+                        ip: ip.clone(),
+                        web: web.clone(),
+                    })
                 }
-                parse_map.remove(&day);
+                DayConfig::Copy { like } if visited[like.index()] => {
+                    // There's a cycle!
+                    break;
+                }
+                DayConfig::Copy { like } => {
+                    visit = *like;
+                }
             }
         }
-        if parse_map.is_empty().not() {
-            return Err(D::Error::invalid_value(
-                Unexpected::Other("cycle within day definitions"),
-                &"a DAG of day definitions",
-            ));
-        }
-        Ok(Week(build_map))
+        None
     }
 }
 
@@ -238,12 +227,20 @@ impl<'de> Deserialize<'de> for Week {
 pub struct Config {
     #[serde(default)]
     pub users: HashMap<Username, Week>,
+
+    #[serde(default="Config::default_interval")]
+    pub interval: Duration,
+}
+impl Config {
+    fn default_interval() -> Duration {
+        Duration::from_secs(15)
+    }
 }
 
 /// The contents of a patch file, valid only for one day.
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Extension {
-    pub users: HashMap<Username, DayConfig>,
+    pub users: HashMap<Username, ResolvedDayConfig>,
 }
 
 #[cfg(test)]
@@ -269,6 +266,8 @@ mod test {
                         like: monday
                     WEDanythinggoes:
                         like: monday
+                    thur:
+                        processes: []
                 mouse:
                     monday:
                         processes:                        
@@ -281,14 +280,26 @@ mod test {
                                 - start: 0002
                                   end:   0003
         "#;
-        let config: Config = serde_yaml::from_str(sample).expect("invalid config");
+        let mut config: Config = serde_yaml::from_str(sample).expect("invalid config");
         let mickey = config
             .users
-            .get(&Username("mickey".to_string()))
+            .remove(&Username("mickey".to_string()))
             .expect("missing user mickey");
-        let mickey_monday = mickey.0.get(&DayOfWeek::monday()).unwrap();
-        let mickey_tuesday = mickey.0.get(&DayOfWeek::tuesday()).unwrap();
-        let mickey_wed = mickey.0.get(&DayOfWeek::wednesday()).unwrap();
+        let mickey_monday = mickey
+            .resolve(DayOfWeek::monday())
+            .expect("Could not resolve monday");
+        let mickey_tuesday = mickey
+            .resolve(DayOfWeek::tuesday())
+            .expect("Could not resolve tuesday");
+        let mickey_wed = mickey
+            .resolve(DayOfWeek::wednesday())
+            .expect("Could not resolve wednesday");
+        let mickey_thur = mickey
+            .resolve(DayOfWeek::thursday())
+            .expect("Could not resolve thursday");
+        let _mickey_fri = mickey
+            .resolve(DayOfWeek::friday())
+            .map(|_| panic!("We should not have any content for friday"));
         assert_eq!(mickey_monday.processes.len(), 1);
         assert_eq!(
             mickey_monday.processes[0].binary.path,
@@ -304,6 +315,7 @@ mod test {
         );
         assert_eq!(mickey_monday, mickey_tuesday);
         assert_eq!(mickey_wed, mickey_tuesday);
-        assert_eq!(mickey.0.len(), 3);
+        assert!(mickey_monday != mickey_thur);
+        assert_eq!(mickey.0.len(), 4);
     }
 }

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, ops::Not, path::{Path, PathBuf}, rc::Rc, time::{SystemTime, UNIX_EPOCH}
+    collections::HashMap, path::{Path, PathBuf}, rc::Rc, time::{Duration, UNIX_EPOCH}
 };
 
 use anyhow::Context;
@@ -8,26 +8,24 @@ use itertools::Itertools;
 use log::{debug, info, warn};
 
 use crate::{
-    config::{Binary, Config, Extension},
-    types::{
-        is_today, AcceptedInterval, DayOfWeek, Domain, IntervalsDiff, RejectedInterval, Username,
-    },
+    config::{Binary, Config, Extension, instruction::Template},
+    types::{AcceptedInterval, DayOfWeek, Domain, IntervalsDiff, RejectedInterval, Username},
     uid_resolver::{self, Uid},
     UserInstructions,
 };
 
-use super::DayConfig;
+use super::ResolvedDayConfig;
 
 #[derive(Debug)]
 struct CacheEntry {
     /// When the file was last changed and read.
-    latest_update: SystemTime,
+    latest_update: DateTime<Local>,
 
     /// Whtn the file was created
-    creation_date: SystemTime,
+    creation_date: DateTime<Local>,
 
     /// Contents last read from that file.
-    config: HashMap<Username, DayConfig>,
+    config: HashMap<Username, ResolvedDayConfig>,
 }
 
 pub struct Options {
@@ -35,9 +33,10 @@ pub struct Options {
     pub extensions_dir: PathBuf,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct Precompiled {
     today_per_user: HashMap<Uid, UserInstructions>,
+    interval: Duration,
 }
 impl Precompiled {
     /// Serialize the web component to JSON, fit for serving.
@@ -57,11 +56,22 @@ impl Precompiled {
     pub fn today_per_user(&self) -> &HashMap<Uid, UserInstructions> {
         &self.today_per_user
     }
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+}
+impl Default for Precompiled {
+    fn default() -> Self {
+        Precompiled {
+            today_per_user: HashMap::new(),
+            interval: Duration::from_secs(10),
+        }
+    }
 }
 
 pub struct ConfigManager {
-    /// A compiled instance of the configuration, collated from all the currently valid configuraiton
-    /// files.
+    /// A compiled instance of the configuration for the day, collated from all the currently
+    /// valid configuraiton files.
     config: Precompiled,
 
     /// A cache from configuration files -> entries.
@@ -93,14 +103,17 @@ impl ConfigManager {
         read: F,
     ) -> Result<bool, anyhow::Error>
     where
-        F: FnOnce(std::fs::File) -> Result<HashMap<Username, DayConfig>, anyhow::Error>,
+        F: FnOnce(std::fs::File) -> Result<HashMap<Username, ResolvedDayConfig>, anyhow::Error>,
     {
         let metadata = std::fs::metadata(&path)
             .with_context(|| format!("could not access configuration at {}", path.display()))?;
-        let latest_update = metadata
-            .modified()
-            .with_context(|| format!("no latest modification time for {}", path.display()))?;
-        if today_only && is_today(latest_update).not() {
+        let latest_update = DateTime::<Local>::from(
+            metadata
+                .modified()
+                .with_context(|| format!("no latest modification time for {}", path.display()))?,
+        );
+        let now = Local::now();
+        if today_only && latest_update.num_days_from_ce() != now.num_days_from_ce() {
             // This file has been modified before today, so it's obsolete, remove from cache.
             debug!(
                 "File {} was modified before today, removing from cache and disk",
@@ -120,11 +133,13 @@ impl ConfigManager {
             .cache
             .entry(path.clone())
             .or_insert_with(|| CacheEntry {
-                latest_update: UNIX_EPOCH,
-                creation_date,
+                latest_update: DateTime::<Local>::from(UNIX_EPOCH),
+                creation_date: DateTime::<Local>::from(creation_date),
                 config: HashMap::default(),
             });
-        if latest_update <= entry.latest_update {
+        if latest_update <= entry.latest_update
+            && latest_update.num_days_from_ce() == now.num_days_from_ce()
+        {
             // No change, keep cache.
             return Ok(false);
         }
@@ -144,11 +159,12 @@ impl ConfigManager {
 
         // 1. Load main file.
         info!("reading config: loading main file");
+        let mut interval = self.config.interval;
         has_changes |= self.fetch_and_cache(self.options.main_config.clone(), false, |file| {
             let config: Config = serde_yaml::from_reader(file).context("Invalid format")?;
             let mut result = HashMap::new();
-            for (user, mut week) in config.users {
-                if let Some(day_config) = week.0.remove(&today) {
+            for (user, week) in config.users {
+                if let Some(day_config) = week.resolve(today) {
                     debug!(
                         "processing user {user} - we have a rule for today {:?}",
                         day_config
@@ -158,6 +174,7 @@ impl ConfigManager {
                     debug!("processing user {user} - no rule for today");
                 }
             }
+            interval = config.interval;
             Ok(result)
         })?;
         debug!(
@@ -165,7 +182,7 @@ impl ConfigManager {
             if has_changes { "changed" } else { "unchanged" }
         );
 
-        // 2. Load other files from the directory, ignoring any error
+        // 2. Load other files from the directory, skipping in case of error
         // (along the way, we purge from the cache directory files that are now old).
         info!("reading config: loading extensions");
         match std::fs::read_dir(&self.options.extensions_dir) {
@@ -213,8 +230,10 @@ impl ConfigManager {
         // 3. Purge from memory any file that hasn't been modified today (except for the main file).
         debug!("reading config: purging old content");
         let before = self.cache.len();
+        let now = Local::now();
         self.cache.retain(|path, entry| {
-            is_today(entry.latest_update) || path == &self.options.main_config
+            entry.latest_update.num_days_from_ce() == now.num_days_from_ce()
+                || path == &self.options.main_config
         });
         let after = self.cache.len();
         if after != before {
@@ -231,7 +250,7 @@ impl ConfigManager {
         if has_changes || self.last_computed.day() != now.day() {
             // We need to recompile today's config if there have been changes or whenever a new day starts.
             self.config =
-                Self::compile(&self.cache).context("error while compiling the configuration")?;
+                Self::compile(&self.cache, interval).context("error while compiling the configuration")?;
             self.last_computed = now;
         }
         Ok(has_changes)
@@ -240,12 +259,12 @@ impl ConfigManager {
     /// Resolve the cache
     ///
     /// - restrict to the current day of the week;
-    /// - restrict to
-    fn compile(cache: &HashMap<PathBuf, CacheEntry>) -> Result<Precompiled, anyhow::Error> {
+    /// - resolve `like` days.
+    fn compile(cache: &HashMap<PathBuf, CacheEntry>, interval: Duration) -> Result<Precompiled, anyhow::Error> {
         let mut resolver = uid_resolver::Resolver::new();
         #[derive(Default)]
         struct TodayPerUser {
-            processes: HashMap<Binary, Vec<IntervalsDiff>>,
+            processes: HashMap<Binary, (Vec<IntervalsDiff>, Option<Template>)>,
             ips: HashMap<Domain, Vec<IntervalsDiff>>,
             web: HashMap<Domain, Vec<IntervalsDiff>>,
         }
@@ -268,11 +287,14 @@ impl ConfigManager {
                         .cloned()
                         .map(RejectedInterval)
                         .collect_vec();
-                    user_entry
+                    let entry = user_entry
                         .processes
                         .entry(proc.binary.clone())
-                        .or_default()
-                        .push(IntervalsDiff { accepted, rejected });
+                        .or_default();
+                    entry.0.push(IntervalsDiff { accepted, rejected });
+                    if proc.then.is_some() {
+                        entry.1 = proc.then.clone();
+                    }
                 }
                 for ip in &day_config.ip {
                     let accepted = ip
@@ -318,6 +340,7 @@ impl ConfigManager {
         // Now resolve intervals and usernames.
         let mut resolved = Precompiled {
             today_per_user: HashMap::new(),
+            interval,
         };
         for (user_name, user_entry) in today_per_user {
             let Ok(uid) = resolver.resolve(&user_name) else {
@@ -329,11 +352,16 @@ impl ConfigManager {
                 let resolved = IntervalsDiff::compute_rejected_intervals(intervals);
                 per_user.ips.insert(domain, resolved);
             }
-            for (binary, intervals) in user_entry.processes {
+            for (binary, (intervals, then)) in user_entry.processes {
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
-                per_user.processes.push((binary, resolved));
+                per_user.processes.push(crate::ProcessInstruction {
+                    binary,
+                    intervals: resolved,
+                    then
+                });
             }
             for (domain, intervals) in user_entry.web {
+                debug!("domain {domain}: preparing to resolve intervals {intervals:?}");
                 let resolved = IntervalsDiff::compute_accepted_intervals(intervals);
                 debug!("domain {domain}: resolving intervals => {resolved:?}");
                 per_user.web.insert(domain, resolved);

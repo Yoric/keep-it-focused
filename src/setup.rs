@@ -34,11 +34,7 @@ pub fn copy_addon() -> Result<(), anyhow::Error> {
 
     // Copy xpi.
     let dest = Path::new(ADDONS_PATH).join(ADDON_FILE_NAME);
-    for dir in [
-        ADDON_SOURCE_SUBDIRECTORY,
-        DIST_SOURCE_SUBDIRECTORY,
-        "."
-    ] {
+    for dir in [ADDON_SOURCE_SUBDIRECTORY, DIST_SOURCE_SUBDIRECTORY, "."] {
         let source = Path::new(dir).join(ADDON_FILE_NAME);
         if std::fs::metadata(&source).is_ok() {
             debug!("copying {} to {}", source.display(), dest.display());
@@ -87,6 +83,8 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
     struct ExtensionSettings {
         installation_mode: Option<InstallationMode>,
         install_url: Option<String>,
+        #[serde(default)]
+        private_browsing: bool,
         #[serde(flatten)]
         _others: serde_json::Value,
     }
@@ -125,6 +123,7 @@ pub fn setup_policies() -> Result<(), anyhow::Error> {
         .or_default();
     extension_settings.install_url = Some(INSTALL_URL.to_string());
     extension_settings.installation_mode = Some(InstallationMode::ForceInstalled);
+    extension_settings.private_browsing = true;
 
     // Write back content.
     debug!("writing {}", CONFIG_PATH);

@@ -1,14 +1,15 @@
 pub mod config;
 
-#[cfg(target_family = "unix")]
-pub mod unix;
 mod server;
 pub mod setup;
 pub mod types;
+#[cfg(target_family = "unix")]
+pub mod unix;
 
-use std::{collections::HashMap, path::PathBuf, rc::Rc, sync::Arc, ops::Not};
+use std::{collections::HashMap, ops::Not, path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use anyhow::Context;
+use chrono::{DateTime, Datelike, Local};
 use config::manager::ConfigManager;
 use log::{debug, info, warn};
 use serde::Serialize;
@@ -16,19 +17,26 @@ use server::Server;
 use typed_builder::TypedBuilder;
 use types::{AcceptedInterval, Domain, RejectedInterval, Username};
 
-use crate::{config::Binary, types::TimeOfDay};
+use crate::{config::{Binary, instruction::Template}, types::TimeOfDay};
 
 #[cfg(target_os = "linux")]
-use crate::unix::linux::notify::{ notify, Urgency };
+use crate::unix::linux::notify::{notify, Urgency};
 #[cfg(target_family = "unix")]
 use crate::unix::uid_resolver::{self, Uid};
 
 #[derive(Serialize, Debug, Clone)]
+pub struct ProcessInstruction {
+    pub binary: Binary,
+    pub intervals: Vec<AcceptedInterval>,
+    pub then: Option<Template>,
+}
+
+#[derive(Serialize, Debug, Clone)]
 pub struct UserInstructions {
-    user_name: Rc<Username>,
-    processes: Vec<(Binary, Vec<AcceptedInterval>)>,
-    ips: HashMap<Domain, Vec<RejectedInterval>>,
-    web: HashMap<Domain, Vec<AcceptedInterval>>,
+    pub user_name: Rc<Username>,
+    pub processes: Vec<ProcessInstruction>,
+    pub ips: HashMap<Domain, Vec<RejectedInterval>>,
+    pub web: HashMap<Domain, Vec<AcceptedInterval>>,
 }
 impl UserInstructions {
     pub fn new(user_name: Rc<Username>) -> Self {
@@ -60,10 +68,12 @@ pub struct KeepItFocused {
 
     /// A minimal HTTP server running on its own thread to serve web filters to web browsers.
     server: Arc<Server>,
+
+    latest_tick: DateTime<Local>,
 }
 
 impl KeepItFocused {
-    pub fn try_new(options: Options) -> Result<Self, anyhow::Error> {
+    pub async fn try_new(options: Options) -> Result<Self, anyhow::Error> {
         debug!("options: {:?}", options);
         let mut me = Self {
             server: Arc::new(Server::new(HashMap::new(), options.port)),
@@ -71,16 +81,17 @@ impl KeepItFocused {
                 main_config: options.main_config.clone(),
                 extensions_dir: options.extensions_dir.clone(),
             }),
+            latest_tick: Local::now(),
             options,
         };
         // Load the configuration and pass it to `server`
-        me.tick()?;
+        me.tick().await?;
         Ok(me)
     }
 
-    pub fn tick(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn tick(&mut self) -> Result<Duration, anyhow::Error> {
         // Load any change.
-        let has_changes = match self.config.load_config() {
+        let mut has_changes = match self.config.load_config() {
             Err(err) => {
                 warn!("Failed to reload config, keeping previous config: {}", err);
                 false
@@ -89,17 +100,23 @@ impl KeepItFocused {
         };
 
         // Update server data.
+        let now = Local::now();
+        has_changes = has_changes || self.latest_tick.num_days_from_ce() != now.num_days_from_ce();
+
+        self.latest_tick = now;
         if has_changes {
             let data = self.config.config().serialize_web();
             self.server
                 .update_data(data)
+                .await
                 .context("Failed to register data to serve, was the server stopped?")?;
             if self.options.ip_tables {
                 self.apply_ip_tables()
                     .context("Failed to update ip tables")?;
             }
         }
-        self.find_offending_processes()
+        self.find_offending_processes()?;
+        Ok(self.config.config().interval())
     }
 
     #[cfg(not(feature = "ip_tables"))]
@@ -198,7 +215,7 @@ impl KeepItFocused {
 
     pub fn background_serve(&self) {
         let server = self.server.clone();
-        std::thread::spawn(move || server.serve_blocking());
+        tokio::task::spawn(async move { server.serve_blocking().await });
     }
 
     fn find_offending_processes(&self) -> Result<(), anyhow::Error> {
@@ -209,6 +226,7 @@ impl KeepItFocused {
         }
 
         let now = TimeOfDay::now();
+        // FIXME: All of this should move to a Linux-specific module.
         let processes = procfs::process::all_processes()
             .context("Could not access /proc, is this a Linux machine?")?;
 
@@ -225,7 +243,7 @@ impl KeepItFocused {
             };
             let Ok(exe) = proc.exe() else { continue };
 
-            for (binary, intervals) in &user_config.processes {
+            for ProcessInstruction { binary, intervals, then } in &user_config.processes {
                 if !binary.matcher.is_match(&exe) {
                     continue;
                 }
@@ -265,14 +283,35 @@ impl KeepItFocused {
                     ) {
                         warn!(target: "notify", "failed to notify user {}: {:?}", user_config.user_name, err)
                     }
-                    if let Err(err) = kill_tree::blocking::kill_tree_with_config(
-                        proc.pid as u32,
-                        &kill_tree::Config {
-                            signal: "SIGKILL".to_string(),
-                            ..Default::default()
-                        },
-                    ) {
-                        warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
+                    
+                    match then {
+                        None => {
+                            // Default implementation: kill!
+                            if let Err(err) = kill_tree::blocking::kill_tree_with_config(
+                                proc.pid as u32,
+                                &kill_tree::Config {
+                                    signal: "SIGKILL".to_string(),
+                                    ..Default::default()
+                                },
+                            ) {
+                                warn!(target: "notify", "failed to kill process {}: {:?}", exe.to_string_lossy(), err)
+                            }
+                        }
+                        Some(then) => {
+                            let map: HashMap<_, _> = [
+                                ("binary".to_string(), exe.to_string_lossy().to_string())
+                            ].into();
+                            match then.render(&map) {
+                                Ok(mut instruction) => {
+                                    instruction.output()
+                                        .with_context(|| format!("failed to launch instruction {then}"))?;
+                                }
+                                Err(err) => {
+                                    warn!("failed to compile `then`: {err}");
+                                    continue;    
+                                }
+                            }
+                        }
                     }
                     info!("binary killed");
                 }

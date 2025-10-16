@@ -6,6 +6,10 @@ use anyhow::{anyhow, Context};
 
 use crate::types::Username;
 
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pid(pub i32);
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Uid(pub u32);
 impl Uid {
